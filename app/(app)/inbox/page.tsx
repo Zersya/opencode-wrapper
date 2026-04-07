@@ -6,6 +6,16 @@ import { Badge } from "@/components/ui/badge"
 import { getNotifications, markAllRead } from "@/lib/actions/notifications"
 import { getCurrentOrganization } from "@/lib/actions/organizations"
 import { formatDistanceToNow } from "date-fns"
+import type { Notification } from "@/lib/db/schema"
+
+interface NotificationData {
+  taskId?: number
+  projectName?: string
+}
+
+type NotificationWithData = Notification & {
+  data: NotificationData | null
+}
 
 export default async function InboxPage() {
   const organization = await getCurrentOrganization()
@@ -26,8 +36,8 @@ export default async function InboxPage() {
     )
   }
 
-  const notifications = await getNotifications()
-  const unreadCount = notifications.filter((n) => !n.read).length
+  const notifications = await getNotifications() as NotificationWithData[]
+  const unreadCount = notifications.filter((n: NotificationWithData) => !n.read).length
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
@@ -53,8 +63,8 @@ export default async function InboxPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {notifications.map((notification) => {
-            const data = notification.data as any
+          {notifications.map((notification: NotificationWithData) => {
+            const data = notification.data as NotificationData | null
             return (
               <Link
                 key={notification.id}
@@ -88,7 +98,7 @@ export default async function InboxPage() {
                           </Badge>
                         )}
                         <span className="text-xs text-gray-500">
-                          {formatDistanceToNow(notification.createdAt, { addSuffix: true })}
+                          {notification.createdAt ? formatDistanceToNow(notification.createdAt, { addSuffix: true }) : "Just now"}
                         </span>
                       </div>
                     </div>

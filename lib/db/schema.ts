@@ -193,6 +193,22 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   comments: many(comments),
 }));
 
+export const taskActivities = pgTable('task_activities', {
+  id: serial('id').primaryKey(),
+  taskId: integer('task_id').references(() => tasks.id).notNull(),
+  userId: text('user_id').references(() => users.id).notNull(),
+  type: text('type').notNull(), // 'status_change', 'priority_change', 'assignee_change', 'title_change', 'description_change', 'comment_added', 'execution_started', etc.
+  oldValue: text('old_value'),
+  newValue: text('new_value'),
+  metadata: jsonb('metadata'), // Additional data like comment content, execution ID, etc.
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const taskActivitiesRelations = relations(taskActivities, ({ one }) => ({
+  task: one(tasks, { fields: [taskActivities.taskId], references: [tasks.id] }),
+  user: one(users, { fields: [taskActivities.userId], references: [users.id] }),
+}));
+
 export const taskExecutionsRelations = relations(taskExecutions, ({ one }) => ({
   task: one(tasks, { fields: [taskExecutions.taskId], references: [tasks.id] }),
   user: one(users, { fields: [taskExecutions.userId], references: [users.id] }),
@@ -207,3 +223,4 @@ export type Task = typeof tasks.$inferSelect;
 export type TaskExecution = typeof taskExecutions.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
+export type TaskActivity = typeof taskActivities.$inferSelect;

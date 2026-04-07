@@ -12,6 +12,10 @@ export async function POST(req: NextRequest) {
     const evt = await verifyWebhook(req)
 
     const { id } = evt.data
+    if (!id) {
+      throw new Error('No user ID in webhook data')
+    }
+    
     const eventType = evt.type
 
     console.log(`[Webhook] Received webhook with ID ${id} and event type: ${eventType}`)
@@ -24,11 +28,12 @@ export async function POST(req: NextRequest) {
     if (eventType === 'user.created') {
       console.log('[Webhook] Processing user.created event...')
       
-      const { email_addresses, first_name, last_name, image_url, username } = evt.data
+      const { email_addresses, first_name, last_name, image_url, username, primary_email_address_id } = evt.data
       
-      const email = email_addresses.find(
-        (e) => e.id === evt.data.primary_email_address_id
-      )?.email_address
+      const primaryEmail = email_addresses?.find(
+        (e) => e.id === primary_email_address_id
+      )
+      const email = primaryEmail?.email_address
 
       if (!email) {
         throw new Error('No primary email found')
@@ -43,7 +48,7 @@ export async function POST(req: NextRequest) {
           id,
           email,
           name: fullName,
-          avatarUrl: image_url,
+          avatarUrl: image_url ?? undefined,
         })
         console.log(`[Webhook] Successfully created user ${id} in database`)
       } catch (userErr) {
@@ -85,20 +90,21 @@ export async function POST(req: NextRequest) {
 
     if (eventType === 'user.updated') {
       console.log('[Webhook] Processing user.updated event...')
-      const { email_addresses, first_name, last_name, image_url } = evt.data
+      const { email_addresses, first_name, last_name, image_url, primary_email_address_id } = evt.data
       
-      const email = email_addresses.find(
-        (e) => e.id === evt.data.primary_email_address_id
-      )?.email_address
+      const primaryEmail = email_addresses?.find(
+        (e) => e.id === primary_email_address_id
+      )
+      const email = primaryEmail?.email_address
 
       const fullName = [first_name, last_name].filter(Boolean).join(' ') || 'User'
 
       await db
         .update(users)
         .set({
-          email,
+          email: email ?? undefined,
           name: fullName,
-          avatarUrl: image_url,
+          avatarUrl: image_url ?? undefined,
           updatedAt: new Date(),
         })
         .where(eq(users.id, id))

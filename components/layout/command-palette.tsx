@@ -16,47 +16,75 @@ import {
   Keyboard,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { Dialog, DialogContent } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import type { Project } from "@/lib/db/schema"
+import type { LucideIcon } from "lucide-react"
+
+interface CommandItem {
+  id: string
+  label: string
+  icon: LucideIcon
+  href: string
+  shortcut?: string
+}
+
+interface CommandGroup {
+  group: string
+  items: CommandItem[]
+}
 
 interface CommandPaletteProps {
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  projects?: Project[]
 }
 
-const commands = [
-  {
-    group: "Navigation",
-    items: [
-      { id: "inbox", label: "Inbox", icon: Inbox, shortcut: "G I", href: "/inbox" },
-      { id: "my-issues", label: "My Issues", icon: LayoutGrid, shortcut: "G M", href: "/issues" },
-    ],
-  },
-  {
-    group: "Projects",
-    items: [
-      { id: "project-1", label: "OpenCode Wrapper", icon: Folder, href: "/projects/opencode-wrapper" },
-      { id: "project-2", label: "Design System", icon: Folder, href: "/projects/design-system" },
-      { id: "project-3", label: "API Gateway", icon: Folder, href: "/projects/api-gateway" },
-      { id: "new-project", label: "Create new project...", icon: Plus, href: "/projects/new" },
-    ],
-  },
-  {
-    group: "Organization",
-    items: [
-      { id: "team", label: "Team", icon: Users, href: "/settings/team" },
-      { id: "settings", label: "Settings", icon: Settings, shortcut: "G S", href: "/settings" },
-      { id: "new-org", label: "Create organization...", icon: Building2, href: "/organizations/new" },
-    ],
-  },
-]
-
-export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
+export function CommandPalette({ open, onOpenChange, projects = [] }: CommandPaletteProps) {
   const router = useRouter()
   const [internalOpen, setInternalOpen] = React.useState(false)
   const [search, setSearch] = React.useState("")
 
   const isOpen = open ?? internalOpen
   const setIsOpen = onOpenChange ?? setInternalOpen
+
+  // Build commands dynamically based on real data
+  const commands = React.useMemo((): CommandGroup[] => {
+    const navigationGroup: CommandGroup = {
+      group: "Navigation",
+      items: [
+        { id: "inbox", label: "Inbox", icon: Inbox, shortcut: "G I", href: "/inbox" },
+        { id: "my-issues", label: "My Issues", icon: LayoutGrid, shortcut: "G M", href: "/issues" },
+      ],
+    }
+
+    // Build projects group from real data
+    const projectItems: CommandItem[] = projects.map((project) => ({
+      id: `project-${project.id}`,
+      label: project.name,
+      icon: Folder,
+      href: `/projects/${project.slug}`,
+    }))
+
+    const projectsGroup: CommandGroup = {
+      group: "Projects",
+      items: [
+        { id: "all-projects", label: "All Projects", icon: Folder, href: "/projects" },
+        ...projectItems,
+        { id: "new-project", label: "Create new project...", icon: Plus, href: "/projects/new" },
+      ],
+    }
+
+    const organizationGroup: CommandGroup = {
+      group: "Organization",
+      items: [
+        { id: "team", label: "Team", icon: Users, href: "/settings/team" },
+        { id: "settings", label: "Settings", icon: Settings, shortcut: "G S", href: "/settings" },
+        { id: "new-org", label: "Create organization...", icon: Building2, href: "/organizations/new" },
+      ],
+    }
+
+    return [navigationGroup, projectsGroup, organizationGroup]
+  }, [projects])
 
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -83,6 +111,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogContent className="overflow-hidden p-0 bg-[#1a1d21] border-gray-800 text-white max-w-lg">
+        <DialogTitle className="sr-only">Command Palette</DialogTitle>
         <Command className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-gray-500 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
           <div className="flex items-center border-b border-gray-800 px-3">
             <Search className="mr-2 h-4 w-4 shrink-0 text-gray-500" />
@@ -114,7 +143,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                     <span className="flex-1">{item.label}</span>
                     {item.shortcut && (
                       <kbd className="pointer-events-none hidden h-5 select-none items-center gap-0.5 rounded border border-gray-700 bg-gray-800 px-1.5 font-mono text-[10px] font-medium text-gray-400 sm:flex">
-                        {item.shortcut.split(" ").map((key, i) => (
+                        {item.shortcut.split(" ").map((key: string, i: number) => (
                           <React.Fragment key={i}>
                             {i > 0 && <span className="text-gray-600"> </span>}
                             {key}

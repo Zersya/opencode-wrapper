@@ -104,7 +104,7 @@ export async function createOrganization(name: string, slug: string, description
   return organization
 }
 
-export async function createOrganizationFromForm(formData: FormData) {
+export async function createOrganizationFromForm(formData: FormData): Promise<void> {
   const name = formData.get("name") as string
   const slug = formData.get("slug") as string
   const description = formData.get("description") as string | undefined
@@ -113,10 +113,9 @@ export async function createOrganizationFromForm(formData: FormData) {
     throw new Error("Name and slug are required")
   }
 
-  // Convert empty string to undefined
   const normalizedDescription = description && description.trim() !== "" ? description : undefined
 
-  return createOrganization(name, slug, normalizedDescription)
+  await createOrganization(name, slug, normalizedDescription)
 }
 
 export async function updateOrganization(

@@ -34,6 +34,7 @@ export function AppLayout({
         projects={projects}
         organizations={organizations}
         currentOrganization={currentOrganization}
+        onSearchClick={() => setCommandPaletteOpen(true)}
       />
 
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -47,6 +48,7 @@ export function AppLayout({
       <CommandPalette
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}
+        projects={projects}
       />
 
       <Toaster />

@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache"
 import { auth } from "@clerk/nextjs/server"
 import { eq, and, desc } from "drizzle-orm"
 import { db } from "@/lib/db"
-import { tasks, type Task, type TaskExecution } from "@/lib/db/schema"
+import { tasks, users, projects, organizations, taskExecutions, comments, type Task, type TaskExecution } from "@/lib/db/schema"
 import { z } from "zod"
+import { recordStatusChange, recordPriorityChange, recordAssigneeChange, recordTitleChange, recordDescriptionChange } from "./activity"
 
 const createTaskSchema = z.object({
   title: z.string().min(1, "Title is required").max(500),
@@ -55,6 +56,73 @@ export async function getTask(taskId: number): Promise<Task | null> {
   return task || null
 }
 
+export async function getTaskWithDetails(taskId: number): Promise<
+  | (Task & {
+      assignee?: { id: string; name: string; avatarUrl: string | null } | null
+      creator?: { id: string; name: string; avatarUrl: string | null }
+      project?: { id: number; name: string; slug: string; organizationId: number }
+      _count?: { comments: number; executions: number }
+    })
+  | null
+> {
+  const { userId } = await auth()
+  if (!userId) throw new Error("Unauthorized")
+
+  const [task] = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1)
+
+  if (!task) return null
+
+  const [assignee] = task.assigneeId
+    ? await db
+        .select({ id: users.id, name: users.name, avatarUrl: users.avatarUrl })
+        .from(users)
+        .where(eq(users.id, task.assigneeId))
+        .limit(1)
+    : []
+
+  const [creator] = await db
+    .select({ id: users.id, name: users.name, avatarUrl: users.avatarUrl })
+    .from(users)
+    .where(eq(users.id, task.creatorId))
+    .limit(1)
+
+  const [project] = await db
+    .select({
+      id: projects.id,
+      name: projects.name,
+      slug: projects.slug,
+      organizationId: projects.organizationId,
+    })
+    .from(projects)
+    .where(eq(projects.id, task.projectId))
+    .limit(1)
+
+  const executionsCount = await db
+    .select()
+    .from(taskExecutions)
+    .where(eq(taskExecutions.taskId, taskId))
+
+  const commentsCount = await db
+    .select()
+    .from(comments)
+    .where(eq(comments.taskId, taskId))
+
+  return {
+    ...task,
+    assignee: assignee || null,
+    creator,
+    project,
+    _count: {
+      executions: executionsCount.length,
+      comments: commentsCount.length,
+    },
+  }
+}
+
 export async function createTask(
   input: z.infer<typeof createTaskSchema>
 ): Promise<Task> {
@@ -85,6 +153,17 @@ export async function updateTask(
   const validated = updateTaskSchema.parse(input)
   const { id, ...updateData } = validated
 
+  // Get current task to compare changes
+  const [currentTask] = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, id))
+    .limit(1)
+
+  if (!currentTask) {
+    throw new Error("Task not found")
+  }
+
   const updatePayload: Record<string, any> = { ...updateData }
   if (updateData.dueDate !== undefined) {
     updatePayload.dueDate = updateData.dueDate ? new Date(updateData.dueDate) : null
@@ -99,6 +178,23 @@ export async function updateTask(
     .set(updatePayload)
     .where(eq(tasks.id, id))
     .returning()
+
+  // Record activity for changes
+  if (updateData.status && updateData.status !== currentTask.status) {
+    await recordStatusChange(id, currentTask.status, updateData.status)
+  }
+  if (updateData.priority && updateData.priority !== currentTask.priority) {
+    await recordPriorityChange(id, currentTask.priority, updateData.priority)
+  }
+  if (updateData.assigneeId !== undefined && updateData.assigneeId !== currentTask.assigneeId) {
+    await recordAssigneeChange(id, currentTask.assigneeId, updateData.assigneeId)
+  }
+  if (updateData.title && updateData.title !== currentTask.title) {
+    await recordTitleChange(id, currentTask.title, updateData.title)
+  }
+  if (updateData.description !== undefined && updateData.description !== currentTask.description) {
+    await recordDescriptionChange(id)
+  }
 
   revalidatePath(`/tasks/${id}`)
   return task
@@ -128,6 +224,16 @@ export async function updateTaskStatus(
   const { userId } = await auth()
   if (!userId) throw new Error("Unauthorized")
 
+  const [currentTask] = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1)
+
+  if (!currentTask) {
+    throw new Error("Task not found")
+  }
+
   const updateData: Record<string, any> = {
     status: newStatus,
     updatedAt: new Date(),
@@ -142,6 +248,113 @@ export async function updateTaskStatus(
     .set(updateData)
     .where(eq(tasks.id, taskId))
     .returning()
+
+  // Record activity
+  await recordStatusChange(taskId, currentTask.status, newStatus)
+
+  revalidatePath(`/tasks/${taskId}`)
+  
+  // Also revalidate the project page to update kanban board
+  // Need to get the project slug for the correct path
+  const [project] = await db
+    .select({ slug: projects.slug })
+    .from(projects)
+    .where(eq(projects.id, currentTask.projectId))
+    .limit(1)
+  
+  if (project) {
+    revalidatePath(`/projects/${project.slug}`)
+  }
+  
+  return task
+}
+
+export async function updateTaskPriority(
+  taskId: number,
+  newPriority: Task["priority"]
+): Promise<Task> {
+  const { userId } = await auth()
+  if (!userId) throw new Error("Unauthorized")
+
+  const [currentTask] = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1)
+
+  if (!currentTask) {
+    throw new Error("Task not found")
+  }
+
+  const [task] = await db
+    .update(tasks)
+    .set({
+      priority: newPriority,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, taskId))
+    .returning()
+
+  // Record activity
+  await recordPriorityChange(taskId, currentTask.priority, newPriority)
+
+  revalidatePath(`/tasks/${taskId}`)
+  return task
+}
+
+export async function updateTaskAssignee(
+  taskId: number,
+  newAssigneeId: string | null,
+  assigneeName?: string
+): Promise<Task> {
+  const { userId } = await auth()
+  if (!userId) throw new Error("Unauthorized")
+
+  const [currentTask] = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1)
+
+  if (!currentTask) {
+    throw new Error("Task not found")
+  }
+
+  const [task] = await db
+    .update(tasks)
+    .set({
+      assigneeId: newAssigneeId,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, taskId))
+    .returning()
+
+  // Record activity
+  await recordAssigneeChange(taskId, currentTask.assigneeId, newAssigneeId, assigneeName)
+
+  revalidatePath(`/tasks/${taskId}`)
+  return task
+}
+
+export async function updateTaskDueDate(
+  taskId: number,
+  newDueDate: string | null | undefined
+): Promise<Task> {
+  const { userId } = await auth()
+  if (!userId) throw new Error("Unauthorized")
+
+  const [task] = await db
+    .update(tasks)
+    .set({
+      dueDate: newDueDate ? new Date(newDueDate) : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(tasks.id, taskId))
+    .returning()
+
+  if (!task) {
+    throw new Error("Task not found")
+  }
 
   revalidatePath(`/tasks/${taskId}`)
   return task
