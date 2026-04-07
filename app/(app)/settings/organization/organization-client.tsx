@@ -13,7 +13,7 @@ import {
   MoreHorizontal,
   Crown,
   ShieldCheck,
-  User,
+  User as UserIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -61,7 +61,7 @@ const settingsSections = [
 const roleIcons: Record<string, React.ReactNode> = {
   owner: <Crown className="h-3.5 w-3.5 text-yellow-500" />,
   admin: <ShieldCheck className="h-3.5 w-3.5 text-blue-500" />,
-  member: <User className="h-3.5 w-3.5 text-gray-500" />,
+  member: <UserIcon className="h-3.5 w-3.5 text-gray-500" />,
 }
 
 export function OrganizationSettingsClient({ 

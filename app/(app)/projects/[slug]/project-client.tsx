@@ -8,7 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { KanbanBoard } from "@/components/kanban"
 import { CreateTaskForm } from "@/components/tasks"
 import { moveTask } from "@/lib/actions/tasks"
+import { executeTask } from "@/lib/actions/executions"
 import type { Task, Project } from "@/lib/db/schema"
+import { toast } from "sonner"
 
 interface ProjectWithTasks extends Project {
   tasks: Task[]
@@ -19,12 +21,44 @@ interface ProjectClientProps {
 }
 
 export function ProjectClient({ project }: ProjectClientProps) {
+  const [createTaskOpen, setCreateTaskOpen] = React.useState(false)
+  const [defaultTaskStatus, setDefaultTaskStatus] = React.useState<Task["status"]>("backlog")
+
   const handleTaskMove = async (taskId: number, newStatus: string) => {
+    const task = project.tasks.find((t) => t.id === taskId)
+    
+    // Move the task first
     await moveTask(taskId, newStatus)
+    
+    // If moved to in_progress and task has autoExecute with opencodeCommand, execute it
+    if (newStatus === "in_progress" && task?.autoExecute && task?.opencodeCommand) {
+      try {
+        toast.info(`Auto-executing task: ${task.title}`)
+        await executeTask(taskId)
+        toast.success(`Task execution started: ${task.title}`)
+      } catch (error) {
+        toast.error(`Failed to auto-execute task: ${error instanceof Error ? error.message : "Unknown error"}`)
+      }
+    }
   }
 
   const handleAddTask = (status: string) => {
-    console.log(`Add task with status ${status}`)
+    // Map the kanban column status to task status format
+    const statusMap: Record<string, Task["status"]> = {
+      backlog: "backlog",
+      todo: "todo",
+      "in-progress": "in_progress",
+      "in-review": "in_review",
+      done: "done",
+    }
+    
+    setDefaultTaskStatus(statusMap[status] || "backlog")
+    setCreateTaskOpen(true)
+  }
+
+  const handleTaskCreated = () => {
+    setCreateTaskOpen(false)
+    setDefaultTaskStatus("backlog")
   }
 
   return (
@@ -50,7 +84,16 @@ export function ProjectClient({ project }: ProjectClientProps) {
           <Button variant="ghost" size="icon" className="text-gray-400 hover:text-white">
             <Settings className="h-4 w-4" />
           </Button>
-          <CreateTaskForm projectId={project.id} />
+          <Button 
+            className="gap-2" 
+            onClick={() => {
+              setDefaultTaskStatus("backlog")
+              setCreateTaskOpen(true)
+            }}
+          >
+            <Plus className="h-4 w-4" />
+            New task
+          </Button>
         </div>
       </div>
 
@@ -101,6 +144,14 @@ export function ProjectClient({ project }: ProjectClientProps) {
           </div>
         </TabsContent>
       </Tabs>
+
+      <CreateTaskForm 
+        projectId={project.id}
+        open={createTaskOpen}
+        onOpenChange={setCreateTaskOpen}
+        defaultStatus={defaultTaskStatus}
+        onTaskCreated={handleTaskCreated}
+      />
     </div>
   )
 }

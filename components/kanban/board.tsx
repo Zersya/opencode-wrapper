@@ -125,10 +125,12 @@ export function KanbanBoard({
     if (!activeStatus || !overStatus || activeStatus === overStatus) return
 
     setTaskMap((prev) => {
-      const activeTasks = prev[activeStatus] || []
-      const overTasks = prev[overStatus] || []
+      const activeTasks = [...(prev[activeStatus] || [])]
+      const overTasks = [...(prev[overStatus] || [])]
 
       const activeIndex = activeTasks.findIndex((t) => t.id === activeId)
+      if (activeIndex === -1) return prev
+      
       const [activeTask] = activeTasks.splice(activeIndex, 1)
 
       const overIndex = overTasks.findIndex((t) => t.id === overId)

@@ -9,16 +9,21 @@ export async function POST(req: NextRequest) {
     const evt = await verifyWebhook(req)
 
     const { id } = evt.data
+    if (!id) {
+      throw new Error('No user ID in webhook data')
+    }
+    
     const eventType = evt.type
 
     console.log(`Received webhook with ID ${id} and event type of ${eventType}`)
 
     if (eventType === 'user.created') {
-      const { email_addresses, first_name, last_name, image_url } = evt.data
+      const { email_addresses, first_name, last_name, image_url, primary_email_address_id } = evt.data
       
-      const email = email_addresses.find(
-        (e) => e.id === evt.data.primary_email_address_id
-      )?.email_address
+      const primaryEmail = email_addresses?.find(
+        (e) => e.id === primary_email_address_id
+      )
+      const email = primaryEmail?.email_address
 
       if (!email) {
         throw new Error('No primary email found')
@@ -30,27 +35,28 @@ export async function POST(req: NextRequest) {
         id,
         email,
         name: fullName,
-        avatarUrl: image_url,
+        avatarUrl: image_url ?? undefined,
       })
 
       console.log(`Created user ${id} in database`)
     }
 
     if (eventType === 'user.updated') {
-      const { email_addresses, first_name, last_name, image_url } = evt.data
+      const { email_addresses, first_name, last_name, image_url, primary_email_address_id } = evt.data
       
-      const email = email_addresses.find(
-        (e) => e.id === evt.data.primary_email_address_id
-      )?.email_address
+      const primaryEmail = email_addresses?.find(
+        (e) => e.id === primary_email_address_id
+      )
+      const email = primaryEmail?.email_address
 
       const fullName = [first_name, last_name].filter(Boolean).join(' ') || 'User'
 
       await db
         .update(users)
         .set({
-          email,
+          email: email ?? undefined,
           name: fullName,
-          avatarUrl: image_url,
+          avatarUrl: image_url ?? undefined,
           updatedAt: new Date(),
         })
         .where(eq(users.id, id))
