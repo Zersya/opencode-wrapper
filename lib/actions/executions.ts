@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { auth } from "@clerk/nextjs/server"
 import { eq } from "drizzle-orm"
 import { db } from "@/lib/db"
-import { tasks, taskExecutions, organizations, type TaskExecution } from "@/lib/db/schema"
+import { tasks, taskExecutions, organizations, projects, type TaskExecution } from "@/lib/db/schema"
 import { decryptApiKey } from "@/lib/server/encryption"
 import {
   startExecution,
@@ -28,10 +28,18 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
   if (!task) throw new Error("Task not found")
   if (!task.opencodeCommand) throw new Error("Task has no opencode command")
 
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, task.projectId))
+    .limit(1)
+
+  if (!project) throw new Error("Project not found")
+
   const [org] = await db
     .select()
     .from(organizations)
-    .where(eq(organizations.id, task.projectId))
+    .where(eq(organizations.id, project.organizationId))
     .limit(1)
 
   const env: Record<string, string> = {}
@@ -46,7 +54,8 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
   const execution = await startExecution({
     taskId,
     userId,
-    organizationId: org?.id || 1,
+    organizationId: org?.id || project.organizationId,
+    orgSlug: org?.slug || "default",
     command: task.opencodeCommand,
     workingDirectory: `/workspace/${org?.slug || "default"}`,
     env,
@@ -142,4 +151,44 @@ export async function getExecutionWithDetails(executionId: number): Promise<
     ...execution,
     task: task || undefined,
   }
+}
+
+export async function getAllExecutions(): Promise<
+  (TaskExecution & {
+    task?: { id: number; title: string; projectId: number }
+    organization?: { id: number; name: string; slug: string }
+  })[]
+> {
+  const { userId } = await auth()
+  if (!userId) throw new Error("Unauthorized")
+
+  const executions = await db
+    .select()
+    .from(taskExecutions)
+    .orderBy(taskExecutions.createdAt)
+
+  // Get related data for each execution
+  const executionsWithDetails = await Promise.all(
+    executions.map(async (execution) => {
+      const [task] = await db
+        .select({ id: tasks.id, title: tasks.title, projectId: tasks.projectId })
+        .from(tasks)
+        .where(eq(tasks.id, execution.taskId))
+        .limit(1)
+
+      const [org] = await db
+        .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
+        .from(organizations)
+        .where(eq(organizations.id, execution.organizationId))
+        .limit(1)
+
+      return {
+        ...execution,
+        task: task || undefined,
+        organization: org || undefined,
+      }
+    })
+  )
+
+  return executionsWithDetails
 }

@@ -9,11 +9,18 @@ import {
   type OrgContainer,
 } from "./docker-manager"
 import { decryptApiKey } from "./encryption"
+import {
+  publishOutput,
+  publishStatus,
+  publishComplete,
+  publishError,
+} from "./execution-stream"
 
 export interface ExecutionOptions {
   taskId: number
   userId: string
   organizationId: number
+  orgSlug: string
   command: string
   workingDirectory: string
   env?: Record<string, string>
@@ -36,6 +43,8 @@ export interface RunningExecution {
 }
 
 const runningExecutions = new Map<number, RunningExecution>()
+
+export { runningExecutions }
 
 export async function startExecution(
   options: ExecutionOptions
@@ -80,7 +89,12 @@ async function runExecution(
     const appendOutput = (data: string) => {
       outputChunks.push(data)
       running.output.push(data)
+      // Real-time publish to SSE subscribers
+      publishOutput(executionId, data)
     }
+
+    // Publish status change to running
+    publishStatus(executionId, "running")
 
     if (process.env.USE_DOCKER === "true") {
       const envVars: Record<string, string> = {
@@ -94,8 +108,14 @@ async function runExecution(
         envVars.ANTHROPIC_API_KEY = options.env.ANTHROPIC_API_KEY
       }
 
+      const container = await createOrgContainer(
+        options.organizationId,
+        options.orgSlug,
+        envVars
+      )
+
       const result = await execInContainer(
-        options.workingDirectory,
+        container.id,
         ["opencode", ...options.command.split(" ")],
         { cwd: options.workingDirectory, env: envVars }
       )
@@ -114,6 +134,12 @@ async function runExecution(
         .where(eq(taskExecutions.id, executionId))
 
       running.status = result.exitCode === 0 ? "success" : "failed"
+      // Publish completion event
+      publishComplete(
+        executionId,
+        result.exitCode === 0 ? "success" : "failed",
+        result.exitCode ?? undefined
+      )
     } else {
       const env = {
         ...process.env,
@@ -154,6 +180,8 @@ async function runExecution(
             .where(eq(taskExecutions.id, executionId))
 
           running.status = status
+          // Publish completion event
+          publishComplete(executionId, status, code ?? undefined)
           resolve()
         })
 
@@ -170,6 +198,8 @@ async function runExecution(
             .where(eq(taskExecutions.id, executionId))
 
           running.status = "failed"
+          // Publish error event
+          publishError(executionId, error.message)
           resolve()
         })
       })
@@ -190,6 +220,8 @@ async function runExecution(
     if (running) {
       running.status = "failed"
     }
+    // Publish error event
+    publishError(executionId, String(error))
   } finally {
     runningExecutions.delete(executionId)
   }
@@ -212,6 +244,9 @@ export async function stopExecution(executionId: number): Promise<void> {
       completedAt: new Date(),
     })
     .where(eq(taskExecutions.id, executionId))
+
+  // Publish completion with canceled status
+  publishComplete(executionId, "canceled")
 }
 
 export async function getExecutionOutput(

@@ -133,6 +133,19 @@ export async function recordDescriptionChange(
   await createTaskActivity(taskId, "description_change")
 }
 
+export async function recordOpencodeCommandChange(
+  taskId: number,
+  oldCommand: string | null,
+  newCommand: string | null
+): Promise<void> {
+  await createTaskActivity(
+    taskId,
+    "opencode_command_change",
+    oldCommand,
+    newCommand
+  )
+}
+
 export async function recordExecutionStarted(
   taskId: number,
   executionId: number

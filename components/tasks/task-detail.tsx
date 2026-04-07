@@ -25,6 +25,7 @@ import {
   ArrowUpCircle,
   ArrowDownCircle,
   MinusCircle,
+  Sparkles,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -60,7 +61,8 @@ import {
   updateTaskDueDate,
 } from "@/lib/actions/tasks"
 import { createComment, deleteComment, updateComment, type CommentWithUser } from "@/lib/actions/comments"
-import { type ActivityItem } from "@/lib/actions/activity"
+import { type ActivityItem, recordOpencodeCommandChange } from "@/lib/actions/activity"
+import { generateOpencodeCommand } from "@/lib/actions/command-generator"
 import { formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
 import type { Task } from "@/lib/db/schema"
@@ -105,7 +107,7 @@ const priorityConfig = {
   urgent: { label: "Urgent", color: "bg-red-500", textColor: "text-red-400", icon: AlertCircle },
 }
 
-type EditMode = "title" | "description" | "none"
+type EditMode = "title" | "description" | "opencodeCommand" | "none"
 type Tab = "comments" | "activity"
 
 export function TaskDetail({ 
@@ -119,11 +121,15 @@ export function TaskDetail({
   const [editMode, setEditMode] = React.useState<EditMode>("none")
   const [title, setTitle] = React.useState(task.title)
   const [description, setDescription] = React.useState(task.description || "")
+  const [opencodeCommand, setOpencodeCommand] = React.useState(task.opencodeCommand || "")
+  const [autoExecute, setAutoExecute] = React.useState(task.autoExecute || false)
   const [executeDialogOpen, setExecuteDialogOpen] = React.useState(false)
   const [isExecuting, setIsExecuting] = React.useState(false)
   const [isSaving, setIsSaving] = React.useState(false)
   const [isDeleting, setIsDeleting] = React.useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false)
+  const [isGeneratingCommand, setIsGeneratingCommand] = React.useState(false)
+  const [generatedExplanation, setGeneratedExplanation] = React.useState<string | null>(null)
   
   // Comments state
   const [comments, setComments] = React.useState<CommentWithUser[]>(initialComments)
@@ -180,6 +186,84 @@ export function TaskDetail({
       setDescription(task.description || "")
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const handleSaveOpencodeCommand = async () => {
+    const trimmedCommand = opencodeCommand.trim()
+    const currentCommand = task.opencodeCommand || ""
+    
+    if (trimmedCommand === currentCommand) {
+      setEditMode("none")
+      return
+    }
+    
+    setIsSaving(true)
+    try {
+      await updateTask({ 
+        id: task.id, 
+        opencodeCommand: trimmedCommand || null,
+        autoExecute: trimmedCommand ? autoExecute : false 
+      })
+      
+      // Record activity
+      await recordOpencodeCommandChange(task.id, task.opencodeCommand || null, trimmedCommand || null)
+      
+      toast.success("OpenCode command updated")
+      setEditMode("none")
+    } catch (error) {
+      toast.error("Failed to update command", {
+        description: error instanceof Error ? error.message : "An unexpected error occurred"
+      })
+      setOpencodeCommand(task.opencodeCommand || "")
+      setAutoExecute(task.autoExecute || false)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleAutoExecuteChange = async (newAutoExecute: boolean) => {
+    if (!opencodeCommand.trim()) {
+      toast.error("Cannot enable auto-execute without a command")
+      return
+    }
+    
+    setAutoExecute(newAutoExecute)
+    try {
+      await updateTask({ id: task.id, autoExecute: newAutoExecute })
+      toast.success(newAutoExecute ? "Auto-execute enabled" : "Auto-execute disabled")
+    } catch (error) {
+      toast.error("Failed to update auto-execute", {
+        description: error instanceof Error ? error.message : "An unexpected error occurred"
+      })
+      setAutoExecute(task.autoExecute || false)
+    }
+  }
+
+  const handleGenerateCommand = async () => {
+    setIsGeneratingCommand(true)
+    setGeneratedExplanation(null)
+    
+    try {
+      const result = await generateOpencodeCommand(task.id)
+      
+      // Set the generated command
+      setOpencodeCommand(result.command)
+      setAutoExecute(result.autoExecute)
+      setGeneratedExplanation(result.explanation)
+      
+      // Switch to edit mode so user can review and save
+      setEditMode("opencodeCommand")
+      
+      toast.success("Command generated!", {
+        description: result.explanation,
+      })
+    } catch (error) {
+      toast.error("Failed to generate command", {
+        description: error instanceof Error ? error.message : "An unexpected error occurred"
+      })
+    } finally {
+      setIsGeneratingCommand(false)
     }
   }
 
@@ -257,7 +341,7 @@ export function TaskDetail({
   }
 
   const handleExecute = async () => {
-    if (!task.opencodeCommand) return
+    if (!opencodeCommand.trim()) return
 
     setIsExecuting(true)
     try {
@@ -368,7 +452,7 @@ export function TaskDetail({
           </div>
 
           <div className="flex items-center gap-1">
-            {task.opencodeCommand && (
+            {opencodeCommand && (
               <Button
                 variant="outline"
                 size="sm"
@@ -648,24 +732,116 @@ export function TaskDetail({
                 </div>
               </div>
 
-              {/* Auto Execute */}
-              {task.autoExecute && (
-                <div className="flex items-center gap-3">
-                  <div className="w-24 text-sm text-gray-500">Auto Run</div>
-                  <div className="flex items-center gap-2 px-2 py-1">
-                    <Zap className="h-4 w-4 text-amber-400" />
-                    <span className="text-sm text-amber-400">Enabled</span>
+              {/* Auto Execute - Always visible with toggle */}
+              <div className="flex items-center gap-3">
+                <div className="w-24 text-sm text-gray-500">Auto Run</div>
+                <button
+                  onClick={() => handleAutoExecuteChange(!autoExecute)}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1 rounded transition-colors",
+                    opencodeCommand.trim() ? "hover:bg-gray-800 cursor-pointer" : "opacity-50 cursor-not-allowed"
+                  )}
+                  disabled={!opencodeCommand.trim()}
+                >
+                  <Zap className={cn("h-4 w-4", autoExecute ? "text-amber-400" : "text-gray-500")} />
+                  <span className={cn("text-sm", autoExecute ? "text-amber-400" : "text-gray-400")}>
+                    {autoExecute ? "Enabled" : "Disabled"}
+                  </span>
+                </button>
+              </div>
+
+              {/* OpenCode Command - Editable */}
+              {editMode === "opencodeCommand" ? (
+                <div className="flex items-start gap-3">
+                  <div className="w-24 text-sm text-gray-500 pt-2">Command</div>
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-gray-500 font-mono">opencode</span>
+                      <Input
+                        value={opencodeCommand}
+                        onChange={(e) => setOpencodeCommand(e.target.value)}
+                        placeholder="e.g., /fix bugs or /review"
+                        className="flex-1 bg-gray-800 border-gray-700 font-mono text-sm"
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault()
+                            handleSaveOpencodeCommand()
+                          }
+                          if (e.key === "Escape") {
+                            setEditMode("none")
+                            setOpencodeCommand(task.opencodeCommand || "")
+                            setAutoExecute(task.autoExecute || false)
+                          }
+                        }}
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={handleSaveOpencodeCommand} disabled={isSaving}>
+                        {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Save
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant="ghost" 
+                        onClick={() => {
+                          setEditMode("none")
+                          setOpencodeCommand(task.opencodeCommand || "")
+                          setAutoExecute(task.autoExecute || false)
+                          setGeneratedExplanation(null)
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                    
+                    {/* AI Explanation */}
+                    {generatedExplanation && (
+                      <div className="flex items-start gap-2 p-2 bg-primary/5 border border-primary/20 rounded">
+                        <Sparkles className="h-3 w-3 text-primary mt-0.5 flex-shrink-0" />
+                        <p className="text-xs text-primary">{generatedExplanation}</p>
+                      </div>
+                    )}
                   </div>
                 </div>
-              )}
-
-              {/* OpenCode Command */}
-              {task.opencodeCommand && (
+              ) : (
                 <div className="flex items-center gap-3">
                   <div className="w-24 text-sm text-gray-500">Command</div>
-                  <code className="text-sm text-gray-300 bg-gray-800 px-2 py-1 rounded font-mono">
-                    opencode {task.opencodeCommand}
-                  </code>
+                  <div className="flex items-center gap-2 flex-1">
+                    <div 
+                      className="flex-1 cursor-pointer hover:bg-gray-800/50 rounded px-2 -mx-2 py-1 transition-colors group"
+                      onClick={() => setEditMode("opencodeCommand")}
+                    >
+                      {opencodeCommand ? (
+                        <code className="text-sm text-gray-300 bg-gray-800 px-2 py-1 rounded font-mono">
+                          opencode {opencodeCommand}
+                        </code>
+                      ) : (
+                        <span className="text-sm text-gray-500 italic">Click to add OpenCode command...</span>
+                      )}
+                    </div>
+                    
+                    {/* Generate Button - Show when no command or as enhancement */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="gap-1.5 text-xs text-primary hover:text-primary hover:bg-primary/10 border border-primary/20"
+                      onClick={handleGenerateCommand}
+                      disabled={isGeneratingCommand}
+                    >
+                      {isGeneratingCommand ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3 w-3" />
+                      )}
+                      {isGeneratingCommand ? "Thinking..." : "AI Generate"}
+                    </Button>
+                    
+                    <Pencil 
+                      className="h-3 w-3 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" 
+                      onClick={() => setEditMode("opencodeCommand")}
+                    />
+                  </div>
                 </div>
               )}
             </div>
@@ -890,6 +1066,14 @@ export function TaskDetail({
                                       return `updated the title`
                                     case "description_change":
                                       return `updated the description`
+                                    case "opencode_command_change":
+                                      if (!activity.oldValue && activity.newValue) {
+                                        return `added OpenCode command`
+                                      } else if (activity.oldValue && !activity.newValue) {
+                                        return `removed OpenCode command`
+                                      } else {
+                                        return `updated OpenCode command`
+                                      }
                                     case "execution_started":
                                       return `started an execution`
                                     case "task_created":
@@ -931,7 +1115,7 @@ export function TaskDetail({
               This will run the following command in the project workspace:
             </p>
             <code className="block p-3 bg-gray-800 rounded text-sm font-mono text-gray-300">
-              opencode {task.opencodeCommand}
+              opencode {opencodeCommand}
             </code>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setExecuteDialogOpen(false)} disabled={isExecuting}>

@@ -24,10 +24,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { createTask } from "@/lib/actions/tasks"
+import { previewOpencodeCommand } from "@/lib/actions/command-generator"
 import type { Task } from "@/lib/db/schema"
 
 interface CreateTaskFormProps {
   projectId: number
+  organizationId?: number
   defaultStatus?: Task["status"]
   onTaskCreated?: (task: Task) => void
   trigger?: React.ReactNode
@@ -54,6 +56,7 @@ const priorityOptions: { value: Task["priority"]; label: string; color: string }
 
 export function CreateTaskForm({
   projectId,
+  organizationId,
   defaultStatus = "backlog",
   onTaskCreated,
   trigger,
@@ -64,6 +67,8 @@ export function CreateTaskForm({
   const router = useRouter()
   const [internalOpen, setInternalOpen] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
+  const [isGenerating, setIsGenerating] = React.useState(false)
+  const [generatedExplanation, setGeneratedExplanation] = React.useState<string | null>(null)
   
   // Use external control if provided, otherwise use internal state
   const isControlled = externalOpen !== undefined
@@ -116,6 +121,41 @@ export function CreateTaskForm({
       toast.error(error instanceof Error ? error.message : "Failed to create task")
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleGenerateCommand = async () => {
+    if (!formData.title.trim()) {
+      toast.error("Please enter a task title first")
+      return
+    }
+
+    setIsGenerating(true)
+    setGeneratedExplanation(null)
+    
+    try {
+      const result = await previewOpencodeCommand(
+        formData.title,
+        formData.description,
+        organizationId
+      )
+      
+      setFormData(prev => ({
+        ...prev,
+        opencodeCommand: result.command,
+        autoExecute: result.autoExecute,
+      }))
+      setGeneratedExplanation(result.explanation)
+      
+      toast.success("Command generated!", {
+        description: result.explanation,
+      })
+    } catch (error) {
+      toast.error("Failed to generate command", {
+        description: error instanceof Error ? error.message : "An unexpected error occurred"
+      })
+    } finally {
+      setIsGenerating(false)
     }
   }
 
@@ -215,7 +255,24 @@ export function CreateTaskForm({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="opencodeCommand">OpenCode Command (optional)</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="opencodeCommand">OpenCode Command</Label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs gap-1 text-primary hover:text-primary hover:bg-primary/10"
+                onClick={handleGenerateCommand}
+                disabled={isGenerating || !formData.title.trim()}
+              >
+                {isGenerating ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Zap className="h-3 w-3" />
+                )}
+                {isGenerating ? "Thinking..." : "AI Generate"}
+              </Button>
+            </div>
             <div className="flex gap-2">
               <Input
                 id="opencodeCommand"
@@ -223,10 +280,16 @@ export function CreateTaskForm({
                 onChange={(e) =>
                   setFormData({ ...formData, opencodeCommand: e.target.value })
                 }
-                placeholder="e.g., fix login bug"
+                placeholder="e.g., fix login bug or click AI Generate"
                 className="flex-1 bg-gray-800 border-gray-700 font-mono text-sm"
               />
             </div>
+            {generatedExplanation && (
+              <p className="text-xs text-primary flex items-center gap-1">
+                <Zap className="h-3 w-3" />
+                {generatedExplanation}
+              </p>
+            )}
             <p className="text-xs text-gray-500">
               The opencode CLI will execute this command when the task is run
             </p>
