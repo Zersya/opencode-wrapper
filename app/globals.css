@@ -24,3 +24,47 @@
     @apply border-gray-800;
   }
 }
+
+/* Custom scrollbar styles matching app theme */
+@layer utilities {
+  /* Webkit scrollbar (Chrome, Safari, Edge) */
+  .scrollbar-custom::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .scrollbar-custom::-webkit-scrollbar-track {
+    background: rgba(42, 47, 55, 0.5);
+    border-radius: 4px;
+  }
+
+  .scrollbar-custom::-webkit-scrollbar-thumb {
+    background: #3f444d;
+    border-radius: 4px;
+    border: 2px solid rgba(42, 47, 55, 0.5);
+  }
+
+  .scrollbar-custom::-webkit-scrollbar-thumb:hover {
+    background: #5e6ad2;
+  }
+
+  .scrollbar-custom::-webkit-scrollbar-corner {
+    background: rgba(42, 47, 55, 0.5);
+  }
+
+  /* Firefox scrollbar */
+  .scrollbar-custom {
+    scrollbar-width: thin;
+    scrollbar-color: #3f444d rgba(42, 47, 55, 0.5);
+  }
+
+  /* Hide scrollbar utility */
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
