@@ -35,7 +35,7 @@ CMD ["sleep", "infinity"]
 `
 
   const stream = await docker.buildImage(
-    { context: ".", dockerfile: Buffer.from(dockerfile) },
+    { context: ".", dockerfile: dockerfile } as unknown as string,
     { t: IMAGE_NAME }
   )
 

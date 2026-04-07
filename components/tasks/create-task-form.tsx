@@ -32,6 +32,8 @@ interface CreateTaskFormProps {
   onTaskCreated?: (task: Task) => void
   trigger?: React.ReactNode
   className?: string
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }
 
 const statusOptions: { value: Task["status"]; label: string }[] = [
@@ -56,10 +58,18 @@ export function CreateTaskForm({
   onTaskCreated,
   trigger,
   className,
+  open: externalOpen,
+  onOpenChange: externalOnOpenChange,
 }: CreateTaskFormProps) {
   const router = useRouter()
-  const [open, setOpen] = React.useState(false)
+  const [internalOpen, setInternalOpen] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
+  
+  // Use external control if provided, otherwise use internal state
+  const isControlled = externalOpen !== undefined
+  const open = isControlled ? externalOpen : internalOpen
+  const setOpen = isControlled ? externalOnOpenChange! : setInternalOpen
+  
   const [formData, setFormData] = React.useState({
     title: "",
     description: "",
@@ -68,6 +78,11 @@ export function CreateTaskForm({
     opencodeCommand: "",
     autoExecute: false,
   })
+
+  // Update status when defaultStatus prop changes (for kanban column clicks)
+  React.useEffect(() => {
+    setFormData((prev) => ({ ...prev, status: defaultStatus }))
+  }, [defaultStatus])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -106,14 +121,16 @@ export function CreateTaskForm({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        {trigger || (
-          <Button className={cn("gap-2", className)}>
-            <Plus className="h-4 w-4" />
-            New task
-          </Button>
-        )}
-      </DialogTrigger>
+      {!isControlled && (
+        <DialogTrigger asChild>
+          {trigger || (
+            <Button className={cn("gap-2", className)}>
+              <Plus className="h-4 w-4" />
+              New task
+            </Button>
+          )}
+        </DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-[500px] bg-[#1a1d21] border-gray-800 text-white">
         <DialogHeader>
           <DialogTitle>Create new task</DialogTitle>

@@ -113,3 +113,33 @@ export async function retryExecution(
 
   return executeTask(execution.taskId)
 }
+
+export async function getExecutionWithDetails(executionId: number): Promise<
+  (TaskExecution & {
+    task?: { id: number; title: string; projectId: number; opencodeCommand: string | null }
+    user?: { id: string; name: string }
+    organization?: { id: number; name: string }
+  }) | null
+> {
+  const { userId } = await auth()
+  if (!userId) throw new Error("Unauthorized")
+
+  const [execution] = await db
+    .select()
+    .from(taskExecutions)
+    .where(eq(taskExecutions.id, executionId))
+    .limit(1)
+
+  if (!execution) return null
+
+  const [task] = await db
+    .select({ id: tasks.id, title: tasks.title, projectId: tasks.projectId, opencodeCommand: tasks.opencodeCommand })
+    .from(tasks)
+    .where(eq(tasks.id, execution.taskId))
+    .limit(1)
+
+  return {
+    ...execution,
+    task: task || undefined,
+  }
+}

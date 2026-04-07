@@ -3,146 +3,67 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, Clock, Calendar, Terminal, User, GitBranch } from "lucide-react"
+import { ArrowLeft, Clock, Calendar, Terminal, User, GitBranch, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { TerminalOutputViewer, ExecutionControls } from "@/components/terminal"
-import { executeTask, cancelExecution, retryExecution } from "@/lib/actions/executions"
+import { getExecutionWithDetails, cancelExecution, retryExecution } from "@/lib/actions/executions"
 import type { TaskExecution } from "@/lib/db/schema"
 
-const mockExecutions: (TaskExecution & {
-  task?: { id: number; title: string }
+interface ExecutionWithDetails extends TaskExecution {
+  task?: { id: number; title: string; opencodeCommand: string | null }
   user?: { id: string; name: string }
   organization?: { id: number; name: string }
-})[] = [
-  {
-    id: 1,
-    taskId: 1,
-    userId: "user_1",
-    organizationId: 1,
-    status: "success",
-    command: "implement authentication flow",
-    workingDirectory: "/workspace/opencode-wrapper",
-    output: `$ opencode implement authentication flow
-
-⠋ Analyzing project structure...
-⠋ Checking dependencies...
-✓ Dependencies installed
-⠋ Generating authentication code...
-✓ Created /lib/auth.ts
-✓ Created /middleware.ts
-✓ Created /app/(auth)/sign-in/page.tsx
-✓ Created /app/(auth)/sign-up/page.tsx
-
-⠋ Running type checks...
-✓ Type checks passed
-
-⠋ Running linting...
-✓ Linting passed
-
-✅ Task completed successfully!
-
-Files modified:
-  - lib/auth.ts (created)
-  - middleware.ts (created)
-  - app/(auth)/sign-in/page.tsx (created)
-  - app/(auth)/sign-up/page.tsx (created)
-
-Next steps:
-  1. Configure your Clerk keys in .env.local
-  2. Test the authentication flow
-  3. Add protected routes as needed
-
-Execution time: 45.2s
-Exit code: 0`,
-    exitCode: 0,
-    startedAt: new Date(Date.now() - 1000 * 60 * 60),
-    completedAt: new Date(Date.now() - 1000 * 60 * 60 + 45000),
-    createdAt: new Date(Date.now() - 1000 * 60 * 60),
-    task: { id: 1, title: "Implement authentication flow with Clerk" },
-    user: { id: "user_1", name: "John Doe" },
-    organization: { id: 1, name: "Emdash Labs" },
-  },
-  {
-    id: 2,
-    taskId: 4,
-    userId: "user_1",
-    organizationId: 1,
-    status: "running",
-    command: "implement docker isolation for CLI",
-    workingDirectory: "/workspace/api-gateway",
-    output: `$ opencode implement docker isolation for CLI
-
-⠋ Analyzing requirements...
-⠋ Checking Docker API availability...
-✓ Docker connection established
-⠋ Creating container manager module...
-
-> Creating lib/server/docker-manager.ts
-  - Container creation logic
-  - Container lifecycle management
-  - Volume mounting configuration
-
-⠋ Implementing CLI executor...`,
-    startedAt: new Date(Date.now() - 1000 * 30),
-    createdAt: new Date(Date.now() - 1000 * 30),
-    task: { id: 4, title: "Create Docker isolation for CLI execution" },
-    user: { id: "user_1", name: "John Doe" },
-    organization: { id: 1, name: "Emdash Labs" },
-  },
-  {
-    id: 3,
-    taskId: 5,
-    userId: "user_1",
-    organizationId: 1,
-    status: "failed",
-    command: "implement real-time output streaming",
-    workingDirectory: "/workspace/opencode-wrapper",
-    output: `$ opencode implement real-time output streaming
-
-⠋ Analyzing requirements...
-⠋ Checking existing implementation...
-✓ Found existing code structure
-⠋ Implementing streaming logic...
-
-❌ Error occurred during execution:
-
-Error: Missing dependency 'ws' for WebSocket support
-  at checkDependencies (src/executor.ts:45)
-  at runExecution (src/executor.ts:89)
-
-To fix this issue:
-  1. Run: npm install ws
-  2. Add types: npm install -D @types/ws
-  3. Retry the execution
-
-Execution time: 12.3s
-Exit code: 1`,
-    exitCode: 1,
-    startedAt: new Date(Date.now() - 1000 * 60 * 120),
-    completedAt: new Date(Date.now() - 1000 * 60 * 120 + 12300),
-    createdAt: new Date(Date.now() - 1000 * 60 * 120),
-    task: { id: 5, title: "Build real-time output streaming" },
-    user: { id: "user_1", name: "John Doe" },
-    organization: { id: 1, name: "Emdash Labs" },
-  },
-]
+}
 
 export default function ExecutionPage() {
   const params = useParams()
   const router = useRouter()
   const executionId = parseInt(params.id as string, 10)
-  const execution = mockExecutions.find((e) => e.id === executionId)
+  
+  const [execution, setExecution] = React.useState<ExecutionWithDetails | null>(null)
+  const [isLoading, setIsLoading] = React.useState(true)
+  const [error, setError] = React.useState<string | null>(null)
+  const [status, setStatus] = React.useState<TaskExecution["status"]>("pending")
 
-  const [status, setStatus] = React.useState(execution?.status || "pending")
+  React.useEffect(() => {
+    async function loadExecution() {
+      try {
+        setIsLoading(true)
+        const data = await getExecutionWithDetails(executionId)
+        if (data) {
+          setExecution(data)
+          setStatus(data.status)
+        } else {
+          setError("Execution not found")
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load execution")
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    
+    loadExecution()
+  }, [executionId])
 
-  if (!execution) {
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+      </div>
+    )
+  }
+
+  if (error || !execution) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
-          <h2 className="text-xl font-semibold text-white mb-2">Execution not found</h2>
+          <h2 className="text-xl font-semibold text-white mb-2">
+            {error || "Execution not found"}
+          </h2>
           <p className="text-gray-400">The execution you're looking for doesn't exist.</p>
         </div>
       </div>
@@ -208,7 +129,7 @@ export default function ExecutionPage() {
                 executionId={executionId}
                 initialOutput={execution.output || ""}
                 initialStatus={status}
-                onStatusChange={setStatus}
+                onStatusChange={(newStatus) => setStatus(newStatus as TaskExecution["status"])}
               />
             </CardContent>
           </Card>

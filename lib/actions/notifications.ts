@@ -10,18 +10,16 @@ export async function getNotifications(limit = 50, unreadOnly = false) {
   const { userId } = await auth()
   if (!userId) throw new Error("Unauthorized")
 
-  const query = db
+  const whereClause = unreadOnly
+    ? and(eq(notifications.userId, userId), eq(notifications.read, false))
+    : eq(notifications.userId, userId)
+
+  return db
     .select()
     .from(notifications)
-    .where(eq(notifications.userId, userId))
+    .where(whereClause)
     .orderBy(desc(notifications.createdAt))
     .limit(limit)
-
-  if (unreadOnly) {
-    return query.where(and(eq(notifications.userId, userId), eq(notifications.read, false)))
-  }
-
-  return query
 }
 
 export async function getUnreadCount() {
