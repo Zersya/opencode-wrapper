@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #0f1115;
+    --foreground: #f7f8f8;
+  }
+
+  * {
+    border-color: #2a2f37;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-gray-800;
+  }
+}
