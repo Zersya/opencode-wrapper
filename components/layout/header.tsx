@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { useUser, useClerk } from "@clerk/nextjs"
 import {
   Bell,
@@ -39,6 +39,7 @@ interface HeaderProps {
 
 export function Header({ className, breadcrumbs, actions }: HeaderProps) {
   const pathname = usePathname()
+  const router = useRouter()
   const { user, isSignedIn, isLoaded } = useUser()
   const { signOut, openSignIn } = useClerk()
   const [searchOpen, setSearchOpen] = React.useState(false)
@@ -138,7 +139,12 @@ export function Header({ className, breadcrumbs, actions }: HeaderProps) {
         <div className="w-px h-6 bg-gray-800" />
 
         {/* Notifications */}
-        <Button variant="ghost" size="icon" className="relative text-gray-400 hover:text-white">
+        <Button 
+          variant="ghost" 
+          size="icon" 
+          className="relative text-gray-400 hover:text-white"
+          onClick={() => router.push('/inbox')}
+        >
           <Bell className="h-4 w-4" />
           <span className="absolute top-1 right-1 w-2 h-2 bg-primary rounded-full" />
         </Button>
@@ -166,11 +172,17 @@ export function Header({ className, breadcrumbs, actions }: HeaderProps) {
                   <p className="text-xs text-gray-500">{userEmail}</p>
                 </div>
                 <DropdownMenuSeparator className="bg-gray-800" />
-                <DropdownMenuItem className="text-gray-300 focus:bg-gray-800 focus:text-white">
+                <DropdownMenuItem 
+                  className="text-gray-300 focus:bg-gray-800 focus:text-white cursor-pointer"
+                  onClick={() => router.push('/settings')}
+                >
                   <Settings className="mr-2 h-4 w-4" />
                   Settings
                 </DropdownMenuItem>
-                <DropdownMenuItem className="text-gray-300 focus:bg-gray-800 focus:text-white">
+                <DropdownMenuItem 
+                  className="text-gray-300 focus:bg-gray-800 focus:text-white cursor-pointer"
+                  onClick={() => router.push('/inbox')}
+                >
                   <Bell className="mr-2 h-4 w-4" />
                   Notifications
                 </DropdownMenuItem>

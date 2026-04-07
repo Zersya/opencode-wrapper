@@ -31,6 +31,8 @@ export const executionStatusEnum = pgEnum('execution_status', [
 
 export const gitProviderEnum = pgEnum('git_provider', ['github', 'gitlab']);
 
+export const apiFormatEnum = pgEnum('api_format', ['openai', 'anthropic']);
+
 export const users = pgTable('users', {
   id: text('id').primaryKey(),
   email: text('email').notNull().unique(),
@@ -60,6 +62,19 @@ export const organizationMembers = pgTable('organization_members', {
   userId: text('user_id').references(() => users.id).notNull(),
   role: text('role').default('member').notNull(),
   joinedAt: timestamp('joined_at').defaultNow(),
+});
+
+export const customProviders = pgTable('custom_providers', {
+  id: serial('id').primaryKey(),
+  organizationId: integer('organization_id').references(() => organizations.id).notNull(),
+  name: text('name').notNull(),
+  apiKey: text('api_key').notNull(),
+  baseUrl: text('base_url').notNull(),
+  apiFormat: apiFormatEnum('api_format').notNull(),
+  models: text('models').array().notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 export const projects = pgTable('projects', {
@@ -158,6 +173,11 @@ export const organizationsRelations = relations(organizations, ({ one, many }) =
   members: many(organizationMembers),
   projects: many(projects),
   gitIntegrations: many(gitIntegrations),
+  customProviders: many(customProviders),
+}));
+
+export const customProvidersRelations = relations(customProviders, ({ one }) => ({
+  organization: one(organizations, { fields: [customProviders.organizationId], references: [organizations.id] }),
 }));
 
 export const projectsRelations = relations(projects, ({ one, many }) => ({
@@ -197,6 +217,7 @@ export const taskExecutionsRelations = relations(taskExecutions, ({ one }) => ({
 
 export type User = typeof users.$inferSelect;
 export type Organization = typeof organizations.$inferSelect;
+export type CustomProvider = typeof customProviders.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskExecution = typeof taskExecutions.$inferSelect;
