@@ -50,7 +50,7 @@ export function KanbanColumn({
   const colorClass = columnColors[id] || columnColors[statusKey] || "text-gray-500"
 
   return (
-    <div className={cn("flex flex-col min-w-[280px] max-w-[280px]", className)}>
+    <div className={cn("flex flex-col min-w-[280px] max-w-[280px] h-full", className)}>
       {/* Column Header */}
       <div className="flex items-center justify-between mb-3 px-1">
         <div className="flex items-center gap-2">
@@ -100,7 +100,7 @@ export function KanbanColumn({
       <div
         ref={setNodeRef}
         className={cn(
-          "flex-1 space-y-2 p-1 rounded-lg transition-colors min-h-[200px]",
+          "flex-1 space-y-2 p-1 rounded-lg transition-colors min-h-[200px] overflow-y-auto scrollbar-custom",
           isOver && "bg-primary/10"
         )}
       >
