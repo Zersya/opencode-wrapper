@@ -151,7 +151,10 @@ async function runExecution(
       const fullMessage = `[opencode-wrapper] ${message}\n`
       outputChunks.push(fullMessage)
       running.output.push(fullMessage)
-      console.log(`[cli-executor:wrapper] ${message}`)
+      // Only log important wrapper messages
+      if (message.includes("error") || message.includes("failed") || message.includes("Error")) {
+        console.log(`[opencode] ⚠️ ${message}`)
+      }
     }
 
     const appendOutput = (data: string, forceDisplay: boolean = false) => {
@@ -160,16 +163,13 @@ async function runExecution(
       
       const processed = processOutput(data)
       
-      if (processed.type === "wrapper") {
-        console.log(`[cli-executor:wrapper] ${data.trim()}`)
-      } else if (forceDisplay || processed.shouldDisplay) {
+      if (forceDisplay || processed.shouldDisplay) {
         publishOutput(executionId, processed.content)
         
         if (processed.isQuestion) {
           running.waitingForInput = true
           running.questionPrompt = processed.content
-          console.log(`[cli-executor] OpenCode is asking: ${processed.questionType}`)
-          console.log(`[cli-executor] Question: ${processed.content.substring(0, 100)}...`)
+          console.log(`[opencode] ❓ Question detected (${processed.questionType}): ${processed.content.substring(0, 60)}...`)
           
           publishQuestion(
             executionId,
@@ -227,56 +227,22 @@ async function runExecution(
 
       logWrapper(`Repository ready at: ${cloneResult.path}`)
     } else {
-      // No git repo configured, use workspace directory directly
-      cloneResult = { success: true, path: workspacePath }
-      logWrapper(`Using workspace directory: ${workspacePath}`)
+      // No git repo configured - use the current project directory
+      // The workspace is empty, so we should work in the actual project
+      cloneResult = { success: true, path: process.cwd() }
+      logWrapper(`No git repo configured - using current project directory: ${process.cwd()}`)
+      logWrapper(`TIP: Configure a git repo in project settings to work with a specific repository`)
     }
 
     logWrapper("Starting opencode execution...")
 
-    const workingDir = cloneResult.path || options.workingDirectory
+    const workingDir = cloneResult.path || options.workingDirectory || process.cwd()
     
-    // Validate and clean the command before execution
-    let command = options.command.trim()
+    // Use the command as-is (natural language)
+    // OpenCode works best with descriptive natural language prompts
+    const command = options.command.trim()
     
-    console.log(`[cli-executor] Raw command from DB: "${command}"`)
-    
-    // Extract just the command part - opencode commands are: /command [description]
-    // Remove any explanation text that the AI might have included
-    // Look for patterns like: "/command ..." or "command: /command ..." or just "/command"
-    const commandMatch = command.match(/(?:command[:\s]*)?(\/\w+(?:\s+[^.\n]+)?)/i)
-    if (commandMatch) {
-      command = commandMatch[1].trim()
-      console.log(`[cli-executor] Extracted command: "${command}"`)
-    } else if (command.length > 100 || command.includes('Since') || command.includes('because')) {
-      console.warn(`[cli-executor] Command appears to contain explanation text, attempting cleanup...`)
-      
-      // Take just the first line and look for /something
-      const firstLine = command.split('\n')[0].trim()
-      const slashMatch = firstLine.match(/(\/\w+)/)
-      if (slashMatch) {
-        command = slashMatch[1]
-        console.log(`[cli-executor] Extracted command from first line: "${command}"`)
-      }
-    }
-    
-    // Ensure command starts with /
-    if (!command.startsWith('/')) {
-      command = '/' + command
-    }
-    
-    // Parse the command into parts: command and arguments
-    const firstSpaceIndex = command.indexOf(' ')
-    if (firstSpaceIndex > 0) {
-      // Has arguments: "/command arg1 arg2"
-      const cmd = command.substring(0, firstSpaceIndex)
-      const args = command.substring(firstSpaceIndex + 1).trim()
-      command = cmd + ' ' + args
-    }
-    
-    console.log(`[cli-executor] Final command to execute: "${command}"`)
-    
-    const commandArgs = parseCommand(command)
+    console.log(`[opencode] ▶️ Executing: "${command.substring(0, 60)}${command.length > 60 ? '...' : ''}"`)
 
     if (useDocker) {
       const envVars: Record<string, string> = {
@@ -289,7 +255,7 @@ async function runExecution(
       if (options.env?.ANTHROPIC_API_KEY) {
         envVars.ANTHROPIC_API_KEY = options.env.ANTHROPIC_API_KEY
       }
-
+      
       const containerName = `opencode-org-${options.organizationId}`
       
       // Ensure directory exists in container
@@ -304,15 +270,41 @@ async function runExecution(
         }
       }
       
+      // Build opencode command - now using natural language
+      // opencode run "natural language description" --print-logs --dangerously-skip-permissions
+      const opencodeArgs = [
+        "run", 
+        command, 
+        "--print-logs", 
+        "--dangerously-skip-permissions"
+      ]
+      
       const result = await execInContainer(
         containerName,
-        ["opencode", ...commandArgs],
+        ["opencode", ...opencodeArgs],
         { cwd: workingDir, env: envVars }
       )
 
-      // Filter and append stdout/stderr
+      // Filter and append stdout
       if (result.stdout) appendOutput(result.stdout)
-      if (result.stderr) appendOutput(result.stderr)
+      
+      // Filter stderr to remove opencode's internal operational logs
+      if (result.stderr) {
+        const lines = result.stderr.split('\n')
+        const filteredLines = lines.filter(line => {
+          const trimmed = line.trim()
+          if (!trimmed) return false
+          // Filter out INFO/WARN/ERROR/DEBUG logs with timestamps
+          if (/^(?:INFO|WARN|ERROR|DEBUG)\s+\d{4}-\d{2}-\d{2}T/i.test(trimmed)) {
+            return false
+          }
+          return true
+        })
+        const filteredStr = filteredLines.join('\n')
+        if (filteredStr.trim()) {
+          appendOutput(filteredStr)
+        }
+      }
 
       await db
         .update(taskExecutions)
@@ -365,25 +357,21 @@ async function runExecution(
         PYTHONUNBUFFERED: "1",
         // Node.js unbuffered
         NODE_NO_WARNINGS: "1",
+        // Force OpenCode to output in non-TTY mode (CI environments)
+        CI: "true",
       }
 
       // Use the full path to opencode to avoid PATH issues
       const opencodePath = installCheck.path || "opencode"
       
-      // Build the command for opencode CLI
-      const commandString = commandArgs.join(' ')
-      
-      // Construct full command: opencode run "/command description"
-      // DO NOT use shell string concatenation - pass args directly to avoid shell buffering
+      // Build the args for opencode CLI - natural language command
+      // opencode run "natural language description" --print-logs --dangerously-skip-permissions
       const fullArgs = [
         "run",
-        commandString,
-        "--print-logs", // Force log output to stderr for real-time streaming
+        command,
+        "--print-logs",
+        "--dangerously-skip-permissions",
       ]
-      
-      console.log(`[cli-executor] Command: "${commandString}"`)
-      console.log(`[cli-executor] Args:`, fullArgs)
-      console.log(`[cli-executor] Working directory:`, workingDir)
       
       // Spawn WITHOUT shell to avoid shell buffering
       // Use 'pipe' for all stdio to ensure we capture everything and can send input
@@ -397,18 +385,41 @@ async function runExecution(
 
       running.process = child
 
+      // Send empty line to stdin to signal opencode to proceed without hanging
+      // This prevents opencode from waiting for input while keeping stdin open for interactive responses
+      if (child.stdin) {
+        child.stdin.write('\n')
+      }
+
       // Handle stdout data - FLUSH IMMEDIATELY
       child.stdout?.on("data", (data) => {
         const str = data.toString()
-        console.log(`[cli-executor] stdout: ${str.substring(0, 100)}...`)
+        // Only log actual content, not internal logs
+        const trimmedPreview = str.trim()
+        if (trimmedPreview && !trimmedPreview.startsWith('INFO') && !trimmedPreview.startsWith('WARN') && !trimmedPreview.startsWith('DEBUG')) {
+          console.log(`[opencode] ${trimmedPreview.substring(0, 80)}${trimmedPreview.length > 80 ? '...' : ''}`)
+        }
         appendOutput(str)
       })
 
-      // Handle stderr data - FLUSH IMMEDIATELY  
+      // Handle stderr data - contains INFO/WARN logs, filter them out
       child.stderr?.on("data", (data) => {
         const str = data.toString()
-        console.log(`[cli-executor] stderr: ${str.substring(0, 100)}...`)
-        appendOutput(str)
+        // Filter out opencode's internal operational logs before appending
+        const lines = str.split('\n')
+        const filteredLines = lines.filter(line => {
+          const trimmed = line.trim()
+          // Skip empty lines and opencode's INFO/WARN/ERROR/DEBUG logs
+          if (!trimmed) return true
+          if (/^(?:INFO|WARN|ERROR|DEBUG)\s+\d{4}-\d{2}-\d{2}T/i.test(trimmed)) {
+            return false
+          }
+          return true
+        })
+        const filteredStr = filteredLines.join('\n')
+        if (filteredStr.trim()) {
+          appendOutput(filteredStr)
+        }
       })
       
       // Handle process errors (spawn failures, etc)
@@ -495,13 +506,11 @@ async function runExecution(
 export async function stopExecution(executionId: number): Promise<void> {
   const running = runningExecutions.get(executionId)
   if (!running) {
-    console.log(`[cli-executor] No running execution found for ${executionId}`)
     return
   }
 
   if (running.process) {
     const pid = running.process.pid
-    console.log(`[cli-executor] Stopping execution ${executionId}, PID: ${pid}`)
     
     try {
       // Kill the entire process group (negative PID)
@@ -554,8 +563,6 @@ export async function stopExecution(executionId: number): Promise<void> {
 
   // Publish completion with canceled status
   publishComplete(executionId, "canceled")
-  
-  console.log(`[cli-executor] Execution ${executionId} stopped and marked as canceled`)
 }
 
 export async function getExecutionOutput(
@@ -648,7 +655,7 @@ export function sendInputToExecution(
     
     child.stdin.write(inputWithNewline)
     
-    console.log(`[cli-executor] Sent input to execution ${executionId}: "${input.substring(0, 50)}..."`)
+    console.log(`[opencode] 📤 User answer sent: "${input.substring(0, 40)}..."`)
     
     running.waitingForInput = false
     running.questionPrompt = undefined

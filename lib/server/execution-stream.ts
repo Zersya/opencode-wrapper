@@ -32,8 +32,6 @@ export function subscribeToExecution(
   executionId: number,
   callback: EventCallback
 ): () => void {
-  console.log(`[SSE] New subscriber for execution ${executionId}`)
-  
   // Create subscriber set if not exists
   if (!subscribers.has(executionId)) {
     subscribers.set(executionId, new Set())
@@ -41,13 +39,11 @@ export function subscribeToExecution(
 
   const executionSubscribers = subscribers.get(executionId)!
   executionSubscribers.add(callback)
-  console.log(`[SSE] Subscriber added, total: ${executionSubscribers.size}`)
 
   // IMMEDIATELY flush any buffered output to this new subscriber
   const buffered = outputBuffers.get(executionId)
   if (buffered && buffered.length > 0) {
     const output = buffered.join("")
-    console.log(`[SSE] Flushing ${output.length} chars of buffered output to new subscriber`)
     callback({
       type: "output",
       payload: {
@@ -58,7 +54,6 @@ export function subscribeToExecution(
     })
     // Clear buffer after flushing to prevent duplicate sends
     outputBuffers.delete(executionId)
-    console.log(`[SSE] Buffer cleared for execution ${executionId}`)
   }
 
   // Send current status
@@ -75,7 +70,6 @@ export function subscribeToExecution(
 
   // Return unsubscribe function
   return () => {
-    console.log(`[SSE] Unsubscribing from execution ${executionId}`)
     executionSubscribers.delete(callback)
     if (executionSubscribers.size === 0) {
       subscribers.delete(executionId)
@@ -90,11 +84,8 @@ export function publishToExecution(
   const executionSubscribers = subscribers.get(executionId)
   
   if (!executionSubscribers || executionSubscribers.size === 0) {
-    console.log(`[SSE] No subscribers for execution ${executionId}, buffering output`)
     return
   }
-
-  console.log(`[SSE] Publishing ${event.type} to ${executionSubscribers.size} subscribers`)
   
   executionSubscribers.forEach((callback) => {
     try {
@@ -106,13 +97,10 @@ export function publishToExecution(
 }
 
 export function publishOutput(executionId: number, output: string): void {
-  console.log(`[SSE] publishOutput called: executionId=${executionId}, length=${output.length}`)
-  
   const subscriberCount = getSubscriberCount(executionId)
   
   // Only buffer if no subscribers - otherwise send directly
   if (subscriberCount === 0) {
-    console.log(`[SSE] Buffering output (no subscribers yet)`)
     if (!outputBuffers.has(executionId)) {
       outputBuffers.set(executionId, [])
     }
@@ -121,7 +109,6 @@ export function publishOutput(executionId: number, output: string): void {
   }
   
   // We have subscribers, publish immediately
-  console.log(`[SSE] Publishing to ${subscriberCount} subscribers immediately`)
   publishToExecution(executionId, {
     type: "output",
     payload: {

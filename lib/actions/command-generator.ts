@@ -77,30 +77,37 @@ export async function generateOpencodeCommand(taskId: number): Promise<GenerateC
 
   const systemPrompt = `You are an expert at generating OpenCode CLI commands based on task descriptions.
 
-OpenCode is a CLI tool that uses AI to help with coding tasks. Common commands include:
-- /fix [description] - Fix bugs or issues (e.g., "/fix authentication bug in login.ts")
-- /review - Review code for improvements (e.g., "/review security vulnerabilities in API")
-- /refactor [description] - Refactor code (e.g., "/refactor database queries for performance")
-- /implement [description] - Implement new features (e.g., "/implement user profile settings page")
-- /test [description] - Write tests (e.g., "/test user registration flow")
-- /docs [description] - Generate documentation (e.g., "/docs API endpoints")
-- /optimize [description] - Optimize performance (e.g., "/optimize image loading")
+OpenCode is a CLI tool that uses AI to help with coding tasks. It works best with NATURAL LANGUAGE descriptions rather than slash commands.
 
-CRITICAL: Always include a BRIEF, SPECIFIC description after the command word. The description should:
-- Be 3-10 words
-- Capture the essence of the task
-- Include relevant file names or components if mentioned
+Examples of good natural language prompts:
+- "Fix the authentication bug in the login component"
+- "Review the API endpoints for security issues"
+- "Refactor the database queries to improve performance"
+- "Implement a user profile settings page with form validation"
+- "Write comprehensive tests for the user registration flow"
+- "Generate documentation for the API endpoints"
+- "Optimize image loading to improve page speed"
+- "Add error handling to the payment processing module"
 
-Analyze the task details and generate the most appropriate opencode command.
+CRITICAL INSTRUCTIONS:
+1. Generate a NATURAL LANGUAGE description of what needs to be done
+2. DO NOT use slash commands like /fix, /implement, etc. - they don't exist in opencode
+3. DO NOT explain what you're doing - just give the command description
+4. DO NOT say "The user wants me to..." - just describe the task itself
+5. Be specific and descriptive - include file names, component names, or specific requirements
+6. The description should clearly explain the task in 1-2 sentences
+
+BAD EXAMPLE: "The user wants me to generate a natural language prompt..."
+GOOD EXAMPLE: "Fix the authentication timeout bug in the login component"
 
 Respond ONLY in this JSON format:
 {
-  "command": "the command without 'opencode' prefix (e.g., '/fix authentication bug in login.ts')",
-  "explanation": "brief explanation of why this command fits the task",
+  "command": "a natural language description of the task (e.g., 'Fix the login timeout issue in the auth module')",
+  "explanation": "brief explanation of what this task involves",
   "autoExecute": true/false (whether this seems safe to auto-run)
 }`
 
-  const userPrompt = `Generate an opencode command for this task:
+  const userPrompt = `Generate a natural language prompt for opencode based on this task:
 
 Title: ${context.taskTitle}
 Description: ${context.taskDescription}
@@ -109,9 +116,13 @@ Priority: ${context.taskPriority}
 Project: ${context.projectName}
 ${context.projectDescription ? `Project Description: ${context.projectDescription}` : ""}
 
-IMPORTANT: Include a brief description in the command, not just the command word. For example, use "/fix login timeout issue" not just "/fix".
+IMPORTANT: 
+- Generate a NATURAL LANGUAGE description, NOT a slash command
+- Be specific about what needs to be done
+- Include file names or component names if mentioned
+- Example: "Fix the authentication timeout in the login.ts file" instead of "/fix login timeout"
 
-Based on this task, what opencode command would be most appropriate?`
+What should opencode do for this task?`
 
   let response: string
 
@@ -147,9 +158,9 @@ Based on this task, what opencode command would be most appropriate?`
     // Parse the response
     const result = parseAIResponse(response)
     
-    // Validate the command format
-    if (!result.command.startsWith('/')) {
-      result.command = '/' + result.command
+    // Strip any leading slash (AI sometimes still generates them despite instructions)
+    if (result.command.startsWith('/')) {
+      result.command = result.command.substring(1).trim()
     }
 
     return result
@@ -284,46 +295,66 @@ function parseAIResponse(response: string): GenerateCommandResult {
     // Look for JSON in code blocks
     const jsonMatch = response.match(/```(?:json)?\s*({[\s\S]*?})\s*```/)
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[1])
+      const parsed = JSON.parse(jsonMatch[1])
+      // Validate the parsed result has required fields
+      if (parsed.command && typeof parsed.command === 'string') {
+        return parsed
+      }
     }
 
     // Try parsing the entire response as JSON
-    return JSON.parse(response)
+    const parsed = JSON.parse(response)
+    if (parsed.command && typeof parsed.command === 'string') {
+      return parsed
+    }
+    throw new Error('Invalid JSON structure')
   } catch {
     // Fallback: try to extract command from text
-    // Match: /command followed by description (up to 100 chars, stop at sentence end)
-    const commandMatch = response.match(/(?:command[:\s]*)?([\/][a-z-]+(?:\s+[^\n.]{1,100})?)/i)
-    let command = commandMatch ? commandMatch[1].trim() : ""
+    // Look for the first line that looks like a command/prompt
+    const lines = response.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('{') && !l.startsWith('}'))
     
-    // Clean up the command
-    command = command
-      .replace(/\.$/, '')  // Remove trailing period
-      .replace(/\s+(?:the|since|because|as|for)\s+.+$/i, '')  // Remove explanation clauses
-      .trim()
-    
-    // If we found a command, use it
-    if (command && command.startsWith('/')) {
-      return {
-        command,
-        explanation: "Generated command based on task analysis",
-        autoExecute: false,
+    for (const line of lines) {
+      // Skip explanatory text and meta-commentary
+      if (line.match(/^(here is|the command|this will|suggested|try|use|based on|i will|i'll|the user wants me to|to generate)/i)) {
+        continue
+      }
+      // Skip task metadata lines (Title:, Description:, etc.)
+      if (line.match(/^(title|description|status|priority|project):/i)) {
+        continue
+      }
+      // Skip JSON property names that leaked through
+      if (line.match(/^["']?(command|explanation|autoExecute)["']?\s*:/i)) {
+        continue
+      }
+      // Look for a descriptive sentence (actual task description)
+      // Must be reasonable length, no URLs, and not look like instructions
+      if (line.length > 10 && line.length < 300 && 
+          !line.includes('://') && 
+          !line.match(/^(i |this |that |these |those |the )/i)) {
+        return {
+          command: line.replace(/^[\s-]*["']?|["']?[\s]*$/g, '').replace(/^\/+/, '').trim(), // Strip leading slashes
+          explanation: "Generated from AI response",
+          autoExecute: false,
+        }
       }
     }
     
-    // Try another pattern: look for command word anywhere
-    const simpleMatch = response.match(/\/([a-z-]+)/i)
-    if (simpleMatch) {
-      return {
-        command: '/' + simpleMatch[1],
-        explanation: "Extracted command from AI response",
-        autoExecute: false,
+    // Last resort: return the first non-empty line that's not obviously wrong
+    for (const line of lines) {
+      if (line.length > 5 && 
+          !line.match(/^(command|explanation|autoExecute|here is|the user|title|description|status|priority)/i)) {
+        return {
+          command: line.replace(/^[\s-]*["']?|["']?[\s]*$/g, '').replace(/^\/+/, '').trim(),
+          explanation: "Extracted from AI response",
+          autoExecute: false,
+        }
       }
     }
     
-    // Last resort: return a descriptive default
+    // Absolute fallback - use the task title from context if available
     return {
-      command: "/review code for improvements",
-      explanation: "Unable to parse AI response, defaulting to code review",
+      command: "Review and improve the codebase", // Safe default
+      explanation: "Unable to parse AI response, using safe default",
       autoExecute: false,
     }
   }
@@ -378,32 +409,44 @@ export async function previewOpencodeCommand(
     .where(eq(organizations.id, organizationId!))
     .limit(1)
 
-  const systemPrompt = `You are an expert at generating OpenCode CLI commands.
+  const systemPrompt = `You are an expert at generating OpenCode CLI natural language prompts.
 
-Common OpenCode commands:
-- /fix [description] - Fix bugs (e.g., "/fix login timeout issue")
-- /review - Code review (e.g., "/review security vulnerabilities")
-- /refactor - Refactor code (e.g., "/refactor API endpoints")
-- /implement [feature] - Implement features (e.g., "/implement user settings")
-- /test - Write tests (e.g., "/test authentication flow")
-- /docs - Documentation (e.g., "/docs API reference")
-- /optimize - Performance optimization (e.g., "/optimize database queries")
+OpenCode works best with descriptive NATURAL LANGUAGE rather than slash commands. Generate clear, specific descriptions of what needs to be done.
 
-CRITICAL: Always include a brief description (3-10 words) after the command word.
+Examples of good prompts:
+- "Fix the authentication timeout bug in the login component"
+- "Review the API endpoints for security vulnerabilities"  
+- "Refactor the database queries to improve performance"
+- "Implement a user profile settings page with form validation"
+- "Write comprehensive tests for the user registration flow"
+- "Generate documentation for the REST API endpoints"
+- "Optimize image loading to reduce page load time"
+
+CRITICAL INSTRUCTIONS:
+1. Generate a NATURAL LANGUAGE description, NOT a slash command like /fix or /implement.
+2. DO NOT explain what you're doing - just give the command description
+3. DO NOT say "The user wants me to..." - just describe the task itself
+4. Be specific and descriptive
+
+BAD EXAMPLE: "The user wants me to generate a natural language prompt..."
+GOOD EXAMPLE: "Fix the authentication timeout bug in the login component"
 
 Respond in JSON format:
 {
-  "command": "the command without opencode prefix",
-  "explanation": "why this command fits",
+  "command": "a natural language description of what opencode should do",
+  "explanation": "why this task is appropriate",
   "autoExecute": boolean
 }`
 
   const userPrompt = `Task Title: ${taskTitle}
 Description: ${taskDescription || "No description"}
 
-IMPORTANT: Include a brief description in the command, not just the command word.
+IMPORTANT: 
+- Generate a NATURAL LANGUAGE description, NOT a slash command
+- Be specific about what needs to be done
+- Example: "Fix the login timeout in the auth module" instead of "/fix login"
 
-Suggest an opencode command:`
+What should opencode do for this task?`
 
   try {
     let response: string
@@ -432,7 +475,14 @@ Suggest an opencode command:`
       return generateHeuristicCommand(taskTitle, taskDescription)
     }
 
-    return parseAIResponse(response)
+    const result = parseAIResponse(response)
+    
+    // Strip any leading slash (AI sometimes still generates them despite instructions)
+    if (result.command.startsWith('/')) {
+      result.command = result.command.substring(1).trim()
+    }
+    
+    return result
   } catch {
     return generateHeuristicCommand(taskTitle, taskDescription)
   }
@@ -440,70 +490,69 @@ Suggest an opencode command:`
 
 function generateHeuristicCommand(title: string, description?: string): GenerateCommandResult {
   const text = (title + " " + (description || "")).toLowerCase()
-  const titleWords = title.split(' ').slice(0, 8).join(' ')
   
-  // Heuristic patterns - include more descriptive commands
+  // Heuristic patterns - generate natural language descriptions
   if (text.includes("bug") || text.includes("fix") || text.includes("error") || text.includes("crash")) {
     return { 
-      command: `/fix ${titleWords}`, 
+      command: `Fix the ${title.toLowerCase().replace(/bug|fix|error|crash/g, '').trim()}`, 
       explanation: "Task appears to be about fixing an issue", 
       autoExecute: false 
     }
   }
   if (text.includes("test") || text.includes("spec")) {
     return { 
-      command: `/test ${titleWords}`, 
+      command: `Write tests for ${title.toLowerCase().replace(/test|spec/g, '').trim()}`, 
       explanation: "Task involves writing tests", 
       autoExecute: false 
     }
   }
   if (text.includes("refactor") || text.includes("clean") || text.includes("improve code")) {
     return { 
-      command: `/refactor ${titleWords}`, 
+      command: `Refactor the ${title.toLowerCase().replace(/refactor|clean|improve code/g, '').trim()} to improve code quality`, 
       explanation: "Task is about code refactoring", 
       autoExecute: false 
     }
   }
   if (text.includes("doc") || text.includes("readme") || text.includes("documentation")) {
     return { 
-      command: `/docs ${titleWords}`, 
+      command: `Generate documentation for ${title.toLowerCase().replace(/doc|readme|documentation/g, '').trim()}`, 
       explanation: "Task involves documentation", 
       autoExecute: true 
     }
   }
   if (text.includes("performance") || text.includes("slow") || text.includes("optimize")) {
     return { 
-      command: `/optimize ${titleWords}`, 
+      command: `Optimize the performance of ${title.toLowerCase().replace(/performance|slow|optimize/g, '').trim()}`, 
       explanation: "Task is about performance optimization", 
       autoExecute: false 
     }
   }
   if (text.includes("implement") || text.includes("add") || text.includes("create") || text.includes("build")) {
     return { 
-      command: `/implement ${titleWords}`, 
+      command: `Implement ${title.toLowerCase().replace(/implement|add|create|build/g, '').trim()}`, 
       explanation: "Task is implementing a new feature", 
       autoExecute: false 
     }
   }
   if (text.includes("security") || text.includes("vulnerability") || text.includes("secure")) {
     return { 
-      command: `/review security aspects of ${titleWords}`, 
+      command: `Review and fix security issues in ${title.toLowerCase().replace(/security|vulnerability|secure/g, '').trim()}`, 
       explanation: "Task involves security considerations", 
       autoExecute: false 
     }
   }
   if (text.includes("review") || text.includes("audit") || text.includes("check")) {
     return { 
-      command: `/review ${titleWords}`, 
+      command: `Review ${title.toLowerCase().replace(/review|audit|check/g, '').trim()} for code quality and best practices`, 
       explanation: "Task requires code review or audit", 
       autoExecute: true 
     }
   }
   
-  // Default - be more descriptive
+  // Default - natural language
   return { 
-    command: `/review code for ${titleWords}`, 
-    explanation: "General code review recommended", 
+    command: `Work on ${title.toLowerCase()}`, 
+    explanation: "General task description", 
     autoExecute: false 
   }
 }

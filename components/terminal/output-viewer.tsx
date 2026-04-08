@@ -4,6 +4,15 @@ import * as React from "react"
 import { useRef, useCallback, useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 import { pollExecutionOutput } from "@/lib/actions/executions"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 interface TerminalOutputViewerProps {
   executionId: number
@@ -41,6 +50,11 @@ export function TerminalOutputViewer({
   const [output, setOutput] = React.useState(initialOutput)
   const [status, setStatus] = React.useState(initialStatus)
   const [isConnected, setIsConnected] = React.useState(false)
+  const [isQuestionModalOpen, setIsQuestionModalOpen] = React.useState(false)
+  const [questionPrompt, setQuestionPrompt] = React.useState("")
+  const [questionType, setQuestionType] = React.useState<"input" | "choice" | "confirmation" | undefined>()
+  const [answer, setAnswer] = React.useState("")
+  const [isSubmitting, setIsSubmitting] = React.useState(false)
   const terminalRef = useRef<HTMLPreElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   const hasConnectedRef = useRef(false)
@@ -150,6 +164,19 @@ export function TerminalOutputViewer({
       }
     })
 
+    eventSource.addEventListener("question", (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log(`[Terminal] Question event received:`, data)
+        setQuestionPrompt(data.output || "Opencode is asking a question...")
+        setQuestionType(data.questionType)
+        setIsQuestionModalOpen(true)
+        setAnswer("")
+      } catch (err) {
+        console.error("[Terminal] Error parsing question event:", err)
+      }
+    })
+
     return () => {
       console.log(`[Terminal] Cleanup for execution ${executionId}`)
       if (eventSourceRef.current) {
@@ -216,6 +243,53 @@ export function TerminalOutputViewer({
     scrollToBottom()
   }, [output, scrollToBottom])
 
+  // Handle submitting answer to opencode
+  const handleSubmitAnswer = async () => {
+    if (!answer.trim()) return
+    
+    setIsSubmitting(true)
+    try {
+      const response = await fetch(`/api/executions/${executionId}/input`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ input: answer }),
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Failed to submit answer: ${response.statusText}`)
+      }
+      
+      const result = await response.json()
+      
+      if (result.success) {
+        console.log(`[Terminal] Answer submitted successfully`)
+        setIsQuestionModalOpen(false)
+        setQuestionPrompt("")
+        setAnswer("")
+        
+        // Append the user's answer to the output for visibility
+        setOutput((prev) => prev + `\n\n[User Input]: ${answer}\n\n`)
+      } else {
+        console.error(`[Terminal] Failed to submit answer:`, result.error)
+        alert(`Failed to submit answer: ${result.error}`)
+      }
+    } catch (err) {
+      console.error("[Terminal] Error submitting answer:", err)
+      alert(`Error submitting answer: ${err}`)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSubmitAnswer()
+    }
+  }
+
   const showConnectionStatus = isRunning || isConnected
 
   return (
@@ -267,6 +341,60 @@ export function TerminalOutputViewer({
           <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
         )}
       </pre>
+
+      {/* Question Modal */}
+      <Dialog open={isQuestionModalOpen} onOpenChange={setIsQuestionModalOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Opencode Needs Your Input</DialogTitle>
+            <DialogDescription>
+              The AI is asking a question and needs your response to continue.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="grid gap-4 py-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-md p-4">
+              <p className="text-sm text-amber-900 whitespace-pre-wrap">{questionPrompt}</p>
+            </div>
+            
+            <div className="grid gap-2">
+              <label htmlFor="answer" className="text-sm font-medium">
+                Your Answer
+                {questionType && (
+                  <span className="text-xs text-gray-500 ml-2">
+                    ({questionType === 'confirmation' ? 'yes/no' : questionType === 'choice' ? 'select an option' : 'type your response'})
+                  </span>
+                )}
+              </label>
+              <Input
+                id="answer"
+                value={answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={questionType === 'confirmation' ? 'Type yes or no...' : 'Type your answer...'}
+                disabled={isSubmitting}
+                autoFocus
+              />
+            </div>
+          </div>
+          
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setIsQuestionModalOpen(false)}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmitAnswer}
+              disabled={!answer.trim() || isSubmitting}
+            >
+              {isSubmitting ? 'Sending...' : 'Send Answer'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

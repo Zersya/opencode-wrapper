@@ -1,16 +1,28 @@
 import type { Metadata } from 'next';
 import { ClerkProvider } from '@clerk/nextjs';
-import { Inter } from 'next/font/google';
+import { Inter, Playfair_Display, Space_Grotesk } from 'next/font/google';
 import './globals.css';
 
-const inter = Inter({ 
+const inter = Inter({
   subsets: ['latin'],
   variable: '--font-inter',
 });
 
+const playfair = Playfair_Display({
+  subsets: ['latin'],
+  variable: '--font-playfair',
+  display: 'swap',
+});
+
+const spaceGrotesk = Space_Grotesk({
+  subsets: ['latin'],
+  variable: '--font-space-grotesk',
+  display: 'swap',
+});
+
 export const metadata: Metadata = {
-  title: 'OpenCode Wrapper',
-  description: 'A Linear-like project management platform with opencode CLI execution',
+  title: 'FlowPOS - Modern Point of Sale System',
+  description: 'Streamline your business with our intelligent POS system. Fast, secure, and built for modern commerce.',
 };
 
 export default function RootLayout({

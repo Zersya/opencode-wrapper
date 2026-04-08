@@ -10,13 +10,22 @@ const PATTERNS = {
   
   question: {
     input: /(?:please\s+(?:provide|enter|input)|what\s+(?:is|are)|how\s+(?:do|can|should)|enter\s+(?:the|your)|input:?\s*$|:\s*$)/i,
-    choice: /(?:choose|select|pick|option|which)\s*(?:\d+:|[\(\[]\d[\)\]]|:?\s*$)/i,
+    choice: /(?:choose|select|pick|option|which)\s*(?:\d+:|\(\[\]\d[\)\]]|:?\s*$)/i,
     confirmation: /(?:proceed\?|continue\?|confirm\?|yes\/no|y\/n|are you sure)/i,
   },
   
   opencodeStart: /^(\s*)(?:user|assistant|system|tool):\s*/i,
   
-  debugLog: /^\s*\[?(?:debug|info|warn|error|log)\]?\s*[:\)]/i,
+  // Opencode's internal logs - comprehensive pattern to catch all operational logs
+  // Matches: INFO 2026-04-08T17:17:31 +0ms service=bus type=message.part.delta publishing
+  // Matches: WARN 2026-04-08T17:17:31 +49ms service=skill name=frontend-design ...
+  opencodeLog: /^(?:INFO|WARN|ERROR|DEBUG)\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\s+[+-]\d+ms\s+service=/i,
+  
+  // Alternative pattern for opencode logs without service= prefix
+  opencodeLogAlt: /^(?:INFO|WARN|ERROR|DEBUG)\s+\d{4}-\d{2}-\d{2}T/i,
+  
+  // Only filter wrapper debug logs
+  debugLog: /^\s*\[?(?:debug)\]?\s*[:\)]/i,
 }
 
 export function filterOutput(rawOutput: string): FilteredOutput {
@@ -38,6 +47,11 @@ export function filterOutput(rawOutput: string): FilteredOutput {
     }
     
     if (PATTERNS.debugLog.test(trimmedLine)) {
+      continue
+    }
+    
+    // Filter opencode's internal operational logs (INFO, WARN, ERROR, DEBUG)
+    if (PATTERNS.opencodeLog.test(trimmedLine) || PATTERNS.opencodeLogAlt.test(trimmedLine)) {
       continue
     }
     
