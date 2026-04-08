@@ -14,6 +14,7 @@ import {
   getExecutionOutput,
   type ExecutionOptions,
 } from "@/lib/server/cli-executor"
+import { getCustomProviderEnvVars } from "./custom-providers"
 
 export async function executeTask(taskId: number): Promise<TaskExecution> {
   const { userId } = await auth()
@@ -42,23 +43,34 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
     .where(eq(organizations.id, project.organizationId))
     .limit(1)
 
+  if (!org) throw new Error("Organization not found")
+
   const env: Record<string, string> = {}
 
-  if (org?.openaiApiKey) {
+  if (org.openaiApiKey) {
     env.OPENAI_API_KEY = decryptApiKey(org.openaiApiKey)
   }
-  if (org?.anthropicApiKey) {
+  if (org.anthropicApiKey) {
     env.ANTHROPIC_API_KEY = decryptApiKey(org.anthropicApiKey)
+  }
+
+  try {
+    const customProviderEnvVars = await getCustomProviderEnvVars(org.id)
+    Object.assign(env, customProviderEnvVars)
+  } catch (error) {
+    console.error("Failed to load custom provider env vars:", error)
   }
 
   const execution = await startExecution({
     taskId,
+    projectId: project.id,
     userId,
-    organizationId: org?.id || project.organizationId,
-    orgSlug: org?.slug || "default",
+    organizationId: org.id,
+    orgSlug: org.slug,
     command: task.opencodeCommand,
-    workingDirectory: `/workspace/${org?.slug || "default"}`,
+    workingDirectory: `/workspace/${org.slug}`,
     env,
+    branch: project.gitBranch || undefined,
   })
 
   revalidatePath(`/tasks/${taskId}`)

@@ -2,6 +2,7 @@ import { Inbox, ArrowRight } from "lucide-react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { LinkButton } from "@/components/ui/link-button"
 import { Badge } from "@/components/ui/badge"
 import { getNotifications, markAllRead } from "@/lib/actions/notifications"
 import { getCurrentOrganization } from "@/lib/actions/organizations"
@@ -28,9 +29,7 @@ export default async function InboxPage() {
           <p className="text-gray-400 mb-6">
             You need to create or join an organization to view notifications.
           </p>
-          <Button asChild>
-            <Link href="/settings/organization">Create Organization</Link>
-          </Button>
+          <LinkButton href="/settings/organization">Create Organization</LinkButton>
         </div>
       </div>
     )

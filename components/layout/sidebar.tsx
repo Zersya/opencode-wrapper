@@ -11,6 +11,7 @@ import {
   Search,
   Settings,
   Folder,
+  Folders,
   Plus,
   Building2,
   LogOut,
@@ -54,6 +55,7 @@ interface SidebarProps {
   className?: string
   collapsed?: boolean
   onCollapse?: (collapsed: boolean) => void
+  onSearchClick?: () => void
   projects: Project[]
   organizations: (Organization & { currentUserRole: string })[]
   currentOrganization: (Organization & { currentUserRole: string }) | null
@@ -63,6 +65,7 @@ export function Sidebar({
   className,
   collapsed = false,
   onCollapse,
+  onSearchClick,
   projects,
   organizations,
   currentOrganization,
@@ -148,7 +151,10 @@ export function Sidebar({
       {/* Search */}
       {!collapsed && (
         <div className="p-3">
-          <button className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-400 bg-gray-800/50 rounded-md hover:bg-gray-800 transition-colors">
+          <button 
+            onClick={onSearchClick}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-400 bg-gray-800/50 rounded-md hover:bg-gray-800 transition-colors"
+          >
             <Search className="h-4 w-4" />
             <span>Search...</span>
             <kbd className="ml-auto px-1.5 py-0.5 text-xs bg-gray-700 rounded">⌘K</kbd>
@@ -205,7 +211,7 @@ export function Sidebar({
             </button>
 
             {projectsExpanded && (
-              <div className="mt-1 space-y-0.5">
+              <div className="mt-1">
                 <Link
                   href="/projects"
                   className={cn(
@@ -215,62 +221,64 @@ export function Sidebar({
                       : "text-gray-400 hover:text-white hover:bg-gray-800/50"
                   )}
                 >
-                  <Folder className="h-4 w-4 text-gray-500" />
-                  <span className="truncate">All Projects</span>
+                  <Folders className="h-4 w-4 text-primary" />
+                  <span className="truncate font-medium">All Projects</span>
                 </Link>
 
-                {projects.map((project) => {
-                  const isActive = pathname.startsWith(`/projects/${project.slug}`)
-                  return (
-                    <Link
-                      key={project.id}
-                      href={`/projects/${project.slug}`}
-                      className={cn(
-                        "flex items-center gap-3 px-3 py-1.5 text-sm rounded-md transition-colors",
-                        isActive
-                          ? "bg-gray-800 text-white"
-                          : "text-gray-400 hover:text-white hover:bg-gray-800/50"
-                      )}
-                    >
-                      <Folder className="h-4 w-4 text-gray-500" />
-                      <span className="truncate">{project.name}</span>
-                    </Link>
-                  )
-                })}
+                <div className="mt-2 space-y-0.5">
+                  {projects.map((project) => {
+                    const isActive = pathname.startsWith(`/projects/${project.slug}`)
+                    return (
+                      <Link
+                        key={project.id}
+                        href={`/projects/${project.slug}`}
+                        className={cn(
+                          "flex items-center gap-3 px-3 py-1.5 text-sm rounded-md transition-colors",
+                          isActive
+                            ? "bg-gray-800 text-white"
+                            : "text-gray-400 hover:text-white hover:bg-gray-800/50"
+                        )}
+                      >
+                        <Folder className="h-4 w-4 text-gray-500" />
+                        <span className="truncate">{project.name}</span>
+                      </Link>
+                    )
+                  })}
 
-                {/* Create Project Button */}
-                <Dialog open={createProjectOpen} onOpenChange={setCreateProjectOpen}>
-                  <DialogTrigger asChild>
-                    <button className="flex items-center gap-3 w-full px-3 py-1.5 text-sm text-gray-500 hover:text-white hover:bg-gray-800/50 rounded-md transition-colors">
-                      <Plus className="h-4 w-4" />
-                      <span>New Project</span>
-                    </button>
-                  </DialogTrigger>
-                  <DialogContent className="bg-[#1a1d21] border-gray-800 text-white">
-                    <DialogHeader>
-                      <DialogTitle>Create new project</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4 pt-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="project-name">Project name</Label>
-                        <Input
-                          id="project-name"
-                          placeholder="My awesome project"
-                          className="bg-gray-800 border-gray-700"
-                        />
+                  {/* Create Project Button */}
+                  <Dialog open={createProjectOpen} onOpenChange={setCreateProjectOpen}>
+                    <DialogTrigger asChild>
+                      <button className="flex items-center gap-3 w-full px-3 py-1.5 text-sm text-gray-500 hover:text-white hover:bg-gray-800/50 rounded-md transition-colors">
+                        <Plus className="h-4 w-4" />
+                        <span>New Project</span>
+                      </button>
+                    </DialogTrigger>
+                    <DialogContent className="bg-[#1a1d21] border-gray-800 text-white">
+                      <DialogHeader>
+                        <DialogTitle>Create new project</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4 pt-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="project-name">Project name</Label>
+                          <Input
+                            id="project-name"
+                            placeholder="My awesome project"
+                            className="bg-gray-800 border-gray-700"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="project-url">Repository URL</Label>
+                          <Input
+                            id="project-url"
+                            placeholder="https://github.com/org/repo"
+                            className="bg-gray-800 border-gray-700"
+                          />
+                        </div>
+                        <Button className="w-full">Create project</Button>
                       </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="project-url">Repository URL</Label>
-                        <Input
-                          id="project-url"
-                          placeholder="https://github.com/org/repo"
-                          className="bg-gray-800 border-gray-700"
-                        />
-                      </div>
-                      <Button className="w-full">Create project</Button>
-                    </div>
-                  </DialogContent>
-                </Dialog>
+                    </DialogContent>
+                  </Dialog>
+                </div>
               </div>
             )}
           </div>

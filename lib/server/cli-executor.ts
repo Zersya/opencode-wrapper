@@ -2,13 +2,8 @@ import { spawn, type ChildProcess } from "child_process"
 import { db } from "@/lib/db"
 import { taskExecutions, type TaskExecution } from "@/lib/db/schema"
 import { eq } from "drizzle-orm"
-import {
-  createOrgContainer,
-  execInContainer,
-  getContainer,
-  type OrgContainer,
-} from "./docker-manager"
-import { decryptApiKey } from "./encryption"
+import { execInContainer } from "./docker-manager"
+import { cloneRepository } from "./git-clone"
 import {
   publishOutput,
   publishStatus,
@@ -16,14 +11,48 @@ import {
   publishError,
 } from "./execution-stream"
 
+function parseCommand(command: string): string[] {
+  const args: string[] = []
+  let current = ""
+  let inQuotes = false
+  let quoteChar = ""
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+
+    if ((char === '"' || char === "'") && !inQuotes) {
+      inQuotes = true
+      quoteChar = char
+    } else if (char === quoteChar && inQuotes) {
+      inQuotes = false
+      quoteChar = ""
+    } else if (char === " " && !inQuotes) {
+      if (current) {
+        args.push(current)
+        current = ""
+      }
+    } else {
+      current += char
+    }
+  }
+
+  if (current) {
+    args.push(current)
+  }
+
+  return args
+}
+
 export interface ExecutionOptions {
   taskId: number
+  projectId: number
   userId: string
   organizationId: number
   orgSlug: string
   command: string
   workingDirectory: string
   env?: Record<string, string>
+  branch?: string
 }
 
 export interface ExecutionResult {
@@ -93,10 +122,43 @@ async function runExecution(
       publishOutput(executionId, data)
     }
 
+    const useDocker = process.env.USE_DOCKER === "true"
+
     // Publish status change to running
     publishStatus(executionId, "running")
 
-    if (process.env.USE_DOCKER === "true") {
+    appendOutput("[opencode-wrapper] Cloning repository...\n")
+    const cloneResult = await cloneRepository({
+      projectId: options.projectId,
+      workingDirectory: options.workingDirectory,
+      branch: options.branch,
+      useDocker,
+      containerId: useDocker ? `opencode-org-${options.organizationId}` : undefined,
+    })
+
+    if (!cloneResult.success && !cloneResult.error?.includes("already exists")) {
+      appendOutput(`[opencode-wrapper] Clone failed: ${cloneResult.error}\n`)
+      await db
+        .update(taskExecutions)
+        .set({
+          status: "failed",
+          output: outputChunks.join(""),
+          completedAt: new Date(),
+        })
+        .where(eq(taskExecutions.id, executionId))
+      running.status = "failed"
+      // Publish error event
+      publishError(executionId, cloneResult.error || "Repository cloning failed")
+      return
+    }
+
+    appendOutput(`[opencode-wrapper] Repository ready at: ${cloneResult.path}\n`)
+    appendOutput(`[opencode-wrapper] Starting opencode execution...\n\n`)
+
+    const workingDir = cloneResult.path || options.workingDirectory
+    const commandArgs = parseCommand(options.command)
+
+    if (useDocker) {
       const envVars: Record<string, string> = {
         ...options.env,
       }
@@ -108,16 +170,11 @@ async function runExecution(
         envVars.ANTHROPIC_API_KEY = options.env.ANTHROPIC_API_KEY
       }
 
-      const container = await createOrgContainer(
-        options.organizationId,
-        options.orgSlug,
-        envVars
-      )
-
+      const containerName = `opencode-org-${options.organizationId}`
       const result = await execInContainer(
-        container.id,
-        ["opencode", ...options.command.split(" ")],
-        { cwd: options.workingDirectory, env: envVars }
+        containerName,
+        ["opencode", ...commandArgs],
+        { cwd: workingDir, env: envVars }
       )
 
       appendOutput(result.stdout)
@@ -146,9 +203,8 @@ async function runExecution(
         ...options.env,
       }
 
-      const args = options.command.split(" ").filter(Boolean)
-      const child = spawn("opencode", args, {
-        cwd: options.workingDirectory,
+      const child = spawn("opencode", commandArgs, {
+        cwd: workingDir,
         env,
         shell: true,
       })

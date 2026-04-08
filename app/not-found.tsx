@@ -1,6 +1,5 @@
-import Link from "next/link"
 import { FolderOpen, ArrowLeft } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { LinkButton } from "@/components/ui/link-button"
 
 export default function NotFound() {
   return (
@@ -13,12 +12,10 @@ export default function NotFound() {
         <p className="text-gray-400 mb-8">
           The page you&apos;re looking for doesn&apos;t exist or has been moved.
         </p>
-        <Button asChild>
-          <Link href="/dashboard">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Go to dashboard
-          </Link>
-        </Button>
+        <LinkButton href="/dashboard">
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Go to dashboard
+        </LinkButton>
       </div>
     </div>
   )

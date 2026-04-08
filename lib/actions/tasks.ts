@@ -253,6 +253,19 @@ export async function updateTaskStatus(
   await recordStatusChange(taskId, currentTask.status, newStatus)
 
   revalidatePath(`/tasks/${taskId}`)
+  
+  // Also revalidate the project page to update kanban board
+  // Need to get the project slug for the correct path
+  const [project] = await db
+    .select({ slug: projects.slug })
+    .from(projects)
+    .where(eq(projects.id, currentTask.projectId))
+    .limit(1)
+  
+  if (project) {
+    revalidatePath(`/projects/${project.slug}`)
+  }
+  
   return task
 }
 
