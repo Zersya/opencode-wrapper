@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useRef, useCallback, useEffect, useState } from "react"
+import { useRef, useCallback, useEffect, useState, useMemo } from "react"
 import { cn } from "@/lib/utils"
 import { pollExecutionOutput } from "@/lib/actions/executions"
 import { Button } from "@/components/ui/button"
@@ -13,6 +13,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { ToolCallCard } from "./tool-call-card"
+import { parseToolCalls } from "./tool-call-parser"
 
 interface TerminalOutputViewerProps {
   executionId: number
@@ -55,7 +57,7 @@ export function TerminalOutputViewer({
   const [questionType, setQuestionType] = React.useState<"input" | "choice" | "confirmation" | undefined>()
   const [answer, setAnswer] = React.useState("")
   const [isSubmitting, setIsSubmitting] = React.useState(false)
-  const terminalRef = useRef<HTMLPreElement>(null)
+  const terminalRef = useRef<HTMLDivElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   const hasConnectedRef = useRef(false)
   const connectionAttemptsRef = useRef(0)
@@ -291,6 +293,12 @@ export function TerminalOutputViewer({
   }
 
   const showConnectionStatus = isRunning || isConnected
+  
+  // Parse output into segments (text and tool calls)
+  const renderedSegments = useMemo(() => {
+    if (!output) return []
+    return parseToolCalls(output)
+  }, [output])
 
   return (
     <div className={cn("flex flex-col rounded-lg overflow-hidden bg-[#0a0b0d] border border-gray-800", className)}>
@@ -326,21 +334,36 @@ export function TerminalOutputViewer({
         </div>
       </div>
 
-      <pre
-        ref={terminalRef}
-        className="flex-1 overflow-auto p-4 text-sm font-mono text-gray-300 leading-relaxed min-h-[300px] max-h-[500px] whitespace-pre-wrap break-all"
+      <div
+        ref={terminalRef as React.RefObject<HTMLDivElement>}
+        className="flex-1 overflow-auto p-4 min-h-[300px] max-h-[500px]"
       >
-        {output ? (
-          output
-        ) : isRunning ? (
-          <span className="text-gray-500">Waiting for output...</span>
+        {!output ? (
+          isRunning ? (
+            <span className="text-gray-500 text-sm font-mono">Waiting for output...</span>
+          ) : (
+            <span className="text-gray-500 text-sm font-mono">No output available</span>
+          )
         ) : (
-          <span className="text-gray-500">No output available</span>
+          <div className="space-y-1">
+            {renderedSegments.map((segment, index) => (
+              <React.Fragment key={index}>
+                {segment.type === "text" && segment.content && (
+                  <pre className="text-sm font-mono text-gray-300 whitespace-pre-wrap break-all leading-relaxed">
+                    {segment.content}
+                  </pre>
+                )}
+                {segment.type === "tool_call" && segment.toolCall && (
+                  <ToolCallCard toolCall={segment.toolCall} />
+                )}
+              </React.Fragment>
+            ))}
+          </div>
         )}
         {isRunning && output && (
           <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
         )}
-      </pre>
+      </div>
 
       {/* Question Modal */}
       <Dialog open={isQuestionModalOpen} onOpenChange={setIsQuestionModalOpen}>
