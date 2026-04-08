@@ -1,6 +1,5 @@
-import Link from "next/link"
 import { FolderOpen, ArrowLeft } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { LinkButton } from "@/components/ui/link-button"
 
 export default function ProjectNotFound() {
   return (
@@ -13,12 +12,10 @@ export default function ProjectNotFound() {
         <p className="text-gray-400 mb-8">
           The project you&apos;re looking for doesn&apos;t exist or you don&apos;t have access to it.
         </p>
-        <Button asChild>
-          <Link href="/dashboard">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Go to dashboard
-          </Link>
-        </Button>
+        <LinkButton href="/dashboard">
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Go to dashboard
+        </LinkButton>
       </div>
     </div>
   )

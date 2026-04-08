@@ -2,7 +2,7 @@ import Link from "next/link"
 import { CheckCircle2, Clock, Play, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { LinkButton } from "@/components/ui/link-button"
 import { getUserIssues } from "@/lib/actions/issues"
 import { getCurrentOrganization } from "@/lib/actions/organizations"
 
@@ -43,9 +43,7 @@ export default async function IssuesPage() {
           <p className="text-gray-400 mb-6">
             You need to create or join an organization to view issues.
           </p>
-          <Button asChild>
-            <Link href="/settings/organization">Create Organization</Link>
-          </Button>
+          <LinkButton href="/settings/organization">Create Organization</LinkButton>
         </div>
       </div>
     )
@@ -60,17 +58,13 @@ export default async function IssuesPage() {
           <h1 className="text-2xl font-semibold text-white mb-1">My Issues</h1>
           <p className="text-gray-500">Issues assigned to you or created by you</p>
         </div>
-        <Button asChild>
-          <Link href="/dashboard">New Issue</Link>
-        </Button>
+        <LinkButton href="/dashboard">New Issue</LinkButton>
       </div>
 
       {issues.length === 0 ? (
         <div className="text-center py-12">
           <p className="text-gray-500 mb-4">No issues yet. Create your first task to get started.</p>
-          <Button asChild>
-            <Link href="/dashboard">Go to Dashboard</Link>
-          </Button>
+          <LinkButton href="/dashboard">Go to Dashboard</LinkButton>
         </div>
       ) : (
         <div className="space-y-2">
