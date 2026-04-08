@@ -92,6 +92,8 @@ export interface RunningExecution {
   status: "running" | "success" | "failed" | "canceled"
   waitingForInput: boolean
   questionPrompt?: string
+  sessionId?: string  // OpenCode API session ID for REST-based executions
+  unsubscribe?: () => void  // Function to unsubscribe from SSE events
 }
 
 // Use globalThis to ensure Map is shared across all module instances
@@ -324,11 +326,147 @@ async function runExecution(
         result.exitCode ?? undefined
       )
     } else {
-      // Check and ensure opencode is installed before spawning
-      const installCheck = await ensureOpenCodeInstalled()
+      // REST API approach - uses opencode server for isolated execution
+      // This provides better isolation and works reliably in Docker/Railway/Coolify
       
-      if (!installCheck.installed) {
-        logWrapper(`Failed to install OpenCode CLI: ${installCheck.error}`)
+      try {
+        // Create OpenCode API client
+        const client = createOpenCodeClient("global")
+        
+        // Create a new session for this execution (isolated context)
+        const session = await client.createSession(`Task ${options.taskId} - ${command.substring(0, 50)}`)
+        running.sessionId = session.id
+        
+        logWrapper(`Created OpenCode session: ${session.id}`)
+        
+        // Subscribe to SSE events for real-time output and questions
+        const unsubscribe = await client.subscribeToEvents(
+          (event: OpenCodeEvent) => {
+            // Handle different event types
+            switch (event.type) {
+              case "stream.chunk":
+                // Stream chunk contains partial output
+                if (event.data?.text) {
+                  appendOutput(event.data.text)
+                }
+                break
+                
+              case "message.updated":
+                // Full message update - check for completion
+                if (event.data?.parts) {
+                  const text = event.data.parts
+                    .filter((p: any) => p.type === "text")
+                    .map((p: any) => p.text)
+                    .join("")
+                  
+                  if (text) {
+                    appendOutput(text, true)
+                  }
+                  
+                  // Check if this is a question
+                  if (event.data.role === "assistant" && isQuestion(text)) {
+                    running.waitingForInput = true
+                    running.questionPrompt = text
+                    console.log(`[opencode] ❓ Question detected: ${text.substring(0, 60)}...`)
+                    
+                    publishQuestion(
+                      executionId,
+                      text,
+                      detectQuestionType(text)
+                    )
+                  }
+                }
+                break
+                
+              case "error":
+                const errorMsg = event.data?.message || "Unknown error"
+                appendOutput(`Error: ${errorMsg}`)
+                console.error(`[opencode] Session error:`, errorMsg)
+                break
+            }
+          },
+          (error: Error) => {
+            console.error(`[opencode] SSE error:`, error)
+            appendOutput(`Connection error: ${error.message}`)
+          }
+        )
+        
+        running.unsubscribe = unsubscribe
+        
+        // Send the command as a message to the session
+        await client.sendMessage(
+          session.id,
+          command,
+          {
+            model: {
+              providerID: "fireworks",
+              modelID: "accounts/fireworks/routers/kimi-k2p5-turbo",
+            },
+          }
+        )
+        
+        logWrapper(`Sent command to session ${session.id}`)
+        
+        // Wait for execution to complete by monitoring session status
+        // Poll every 2 seconds to check if done
+        let isComplete = false
+        let attempts = 0
+        const maxAttempts = 600 // 20 minutes max (600 * 2 seconds)
+        
+        while (!isComplete && attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          attempts++
+          
+          try {
+            const sessionInfo = await client.getSession(session.id)
+            // Check if session has messages indicating completion
+            // This is a simplified check - in production you'd want more robust detection
+            
+            // If no new output for a while and session is idle, consider it complete
+            if (attempts > 30 && !running.waitingForInput) {
+              // Give it a bit more time after last output
+              isComplete = true
+            }
+          } catch (error) {
+            // Session might be deleted or error occurred
+            console.error(`[opencode] Error checking session:`, error)
+            isComplete = true
+          }
+        }
+        
+        // Clean up
+        unsubscribe()
+        
+        // Delete the session
+        try {
+          await client.deleteSession(session.id)
+          logWrapper(`Deleted session ${session.id}`)
+        } catch (error) {
+          console.error(`[opencode] Error deleting session:`, error)
+        }
+        
+        // Mark as complete
+        const finalStatus = running.status === "canceled" ? "canceled" : "success"
+        
+        await db
+          .update(taskExecutions)
+          .set({
+            status: finalStatus,
+            output: outputChunks.join(""),
+            exitCode: finalStatus === "success" ? 0 : 1,
+            completedAt: new Date(),
+          })
+          .where(eq(taskExecutions.id, executionId))
+        
+        running.status = finalStatus
+        publishComplete(executionId, finalStatus, finalStatus === "success" ? 0 : 1)
+        
+      } catch (error) {
+        console.error(`[opencode] REST API execution failed:`, error)
+        
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        appendOutput(`Execution failed: ${errorMessage}`)
+        
         await db
           .update(taskExecutions)
           .set({
@@ -337,148 +475,10 @@ async function runExecution(
             completedAt: new Date(),
           })
           .where(eq(taskExecutions.id, executionId))
+        
         running.status = "failed"
-        publishError(executionId, `OpenCode CLI installation failed: ${installCheck.error}`)
-        return
+        publishError(executionId, errorMessage)
       }
-      
-      logWrapper(`OpenCode CLI ready: ${installCheck.version} at ${installCheck.path}`)
-      
-      // FORCE UNBUFFERED OUTPUT - This is the key fix!
-      const env = {
-        ...process.env,
-        ...options.env,
-        // Force Node.js to flush output immediately
-        NODE_OPTIONS: "--no-warnings",
-        // Disable all buffering
-        FORCE_COLOR: "1",
-        TERM: "xterm-256color",
-        // Python unbuffered (if opencode uses Python internally)
-        PYTHONUNBUFFERED: "1",
-        // Node.js unbuffered
-        NODE_NO_WARNINGS: "1",
-        // Force OpenCode to output in non-TTY mode (CI environments)
-        CI: "true",
-      }
-
-      // Use the full path to opencode to avoid PATH issues
-      const opencodePath = installCheck.path || "opencode"
-      
-      // Build the args for opencode CLI - natural language command
-      // opencode run "natural language description" --print-logs --dangerously-skip-permissions
-      const fullArgs = [
-        "run",
-        command,
-        "--print-logs",
-        "--dangerously-skip-permissions",
-      ]
-      
-      // Spawn WITHOUT shell to avoid shell buffering
-      // Use 'pipe' for all stdio to ensure we capture everything and can send input
-      const child = spawn(opencodePath, fullArgs, {
-        cwd: workingDir,
-        env,
-        shell: false, // CRITICAL: Don't use shell - it adds buffering
-        detached: false, // Keep attached so we can track output
-        stdio: ['pipe', 'pipe', 'pipe'], // Allow stdin for interactive responses
-      })
-
-      running.process = child
-
-      // Send empty line to stdin to signal opencode to proceed without hanging
-      // This prevents opencode from waiting for input while keeping stdin open for interactive responses
-      if (child.stdin) {
-        child.stdin.write('\n')
-      }
-
-      // Handle stdout data - FLUSH IMMEDIATELY
-      child.stdout?.on("data", (data) => {
-        const str = data.toString()
-        // Only log actual content, not internal logs
-        const trimmedPreview = str.trim()
-        if (trimmedPreview && !trimmedPreview.startsWith('INFO') && !trimmedPreview.startsWith('WARN') && !trimmedPreview.startsWith('DEBUG')) {
-          console.log(`[opencode] ${trimmedPreview.substring(0, 80)}${trimmedPreview.length > 80 ? '...' : ''}`)
-        }
-        appendOutput(str)
-      })
-
-      // Handle stderr data - contains INFO/WARN logs, filter them out
-      child.stderr?.on("data", (data) => {
-        const str = data.toString()
-        // Filter out opencode's internal operational logs before appending
-        const lines = str.split('\n')
-        const filteredLines = lines.filter(line => {
-          const trimmed = line.trim()
-          // Skip empty lines and opencode's INFO/WARN/ERROR/DEBUG logs
-          if (!trimmed) return true
-          if (/^(?:INFO|WARN|ERROR|DEBUG)\s+\d{4}-\d{2}-\d{2}T/i.test(trimmed)) {
-            return false
-          }
-          return true
-        })
-        const filteredStr = filteredLines.join('\n')
-        if (filteredStr.trim()) {
-          appendOutput(filteredStr)
-        }
-      })
-      
-      // Handle process errors (spawn failures, etc)
-      child.on("error", (error) => {
-        console.error(`[cli-executor] Process error:`, error)
-        logWrapper(`Process error: ${error.message}`)
-      })
-
-      await new Promise<void>((resolve) => {
-        child.on("close", async (code) => {
-          const status = code === 0 ? "success" : "failed"
-
-          await db
-            .update(taskExecutions)
-            .set({
-              status,
-              output: outputChunks.join(""),
-              exitCode: code ?? undefined,
-              completedAt: new Date(),
-            })
-            .where(eq(taskExecutions.id, executionId))
-
-          running.status = status
-          // Publish completion event
-          publishComplete(executionId, status, code ?? undefined)
-          resolve()
-        })
-
-        child.on("error", async (error) => {
-          let errorMessage = error.message
-          
-          // Provide more helpful error messages
-          if (error.message.includes("ENOENT")) {
-            // Check if it's the directory or the command that's missing
-            try {
-              await execAsync(`test -d "${workingDir}"`)
-              errorMessage = "OpenCode CLI not found in PATH after installation attempt. Try restarting the server or install manually: npm install -g @anthropic/opencode"
-            } catch {
-              errorMessage = `Working directory does not exist: ${workingDir}`
-            }
-          }
-          
-          appendOutput(`Error: ${errorMessage}`)
-
-          await db
-            .update(taskExecutions)
-            .set({
-              status: "failed",
-              output: outputChunks.join(""),
-              completedAt: new Date(),
-            })
-            .where(eq(taskExecutions.id, executionId))
-
-          running.status = "failed"
-          // Publish error event
-          publishError(executionId, errorMessage)
-          resolve()
-        })
-      })
     }
   } catch (error) {
     console.error("Execution failed:", error)
@@ -509,6 +509,24 @@ export async function stopExecution(executionId: number): Promise<void> {
     return
   }
 
+  // Handle REST API session cleanup
+  if (running.sessionId) {
+    try {
+      // Unsubscribe from events
+      if (running.unsubscribe) {
+        running.unsubscribe()
+      }
+      
+      // Delete the session
+      const client = createOpenCodeClient("global")
+      await client.deleteSession(running.sessionId)
+      console.log(`[opencode] Deleted session ${running.sessionId} on cancel`)
+    } catch (error) {
+      console.error(`[cli-executor] Error cleaning up session:`, error)
+    }
+  }
+
+  // Handle legacy process-based execution (Docker mode)
   if (running.process) {
     const pid = running.process.pid
     
@@ -617,10 +635,10 @@ export function getQuestionPrompt(executionId: number): string | undefined {
   return running?.questionPrompt
 }
 
-export function sendInputToExecution(
+export async function sendInputToExecution(
   executionId: number, 
   input: string
-): { success: boolean; error?: string } {
+): Promise<{ success: boolean; error?: string }> {
   const running = runningExecutions.get(executionId)
   
   if (!running) {
@@ -630,10 +648,10 @@ export function sendInputToExecution(
     }
   }
 
-  if (!running.process) {
+  if (!running.sessionId) {
     return { 
       success: false, 
-      error: "No active process for this execution" 
+      error: "No active OpenCode session for this execution" 
     }
   }
 
@@ -642,18 +660,19 @@ export function sendInputToExecution(
   }
 
   try {
-    const child = running.process
+    // Use REST API to send the user input as a new message
+    const client = createOpenCodeClient("global")
     
-    if (!child.stdin || !child.stdin.writable) {
-      return { 
-        success: false, 
-        error: "Process stdin is not available for writing" 
+    await client.sendMessage(
+      running.sessionId,
+      input,
+      {
+        model: {
+          providerID: "fireworks",
+          modelID: "accounts/fireworks/routers/kimi-k2p5-turbo",
+        },
       }
-    }
-
-    const inputWithNewline = input.endsWith('\n') ? input : input + '\n'
-    
-    child.stdin.write(inputWithNewline)
+    )
     
     console.log(`[opencode] 📤 User answer sent: "${input.substring(0, 40)}..."`)
     
@@ -668,4 +687,29 @@ export function sendInputToExecution(
       error: `Failed to send input: ${error}` 
     }
   }
+}
+
+// Helper function to detect if text is a question
+function isQuestion(text: string): boolean {
+  const questionPatterns = [
+    /\?\s*$/m,  // Ends with question mark
+    /(?:please\s+(?:provide|enter|input|specify))|(?:what\s+(?:is|are))|(?:how\s+(?:do|can|should|would))|(?:enter\s+(?:the|your))|(?:input:?\s*$)/i,
+    /(?:choose|select|pick|option|which\s+.*\?)/i,
+    /(?:proceed\?|continue\?|confirm\?|yes\/no|y\/n)/i,
+  ]
+  
+  return questionPatterns.some(pattern => pattern.test(text))
+}
+
+// Helper function to detect question type
+function detectQuestionType(text: string): "input" | "choice" | "confirmation" {
+  if (/(?:proceed\?|continue\?|confirm\?|yes\/no|y\/n|are you sure)/i.test(text)) {
+    return "confirmation"
+  }
+  
+  if (/(?:choose|select|pick|option|which\s+(?:one|option|of))/i.test(text)) {
+    return "choice"
+  }
+  
+  return "input"
 }

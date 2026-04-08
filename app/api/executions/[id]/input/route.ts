@@ -42,7 +42,7 @@ export async function POST(
       }, { status: 400 })
     }
 
-    const result = sendInputToExecution(executionIdNum, input)
+    const result = await sendInputToExecution(executionIdNum, input)
 
     if (!result.success) {
       return NextResponse.json({ 
