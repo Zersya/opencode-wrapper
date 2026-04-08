@@ -159,7 +159,7 @@ async function runExecution(
       }
     }
 
-    const appendOutput = (data: string, forceDisplay: boolean = false) => {
+    let appendOutput = (data: string, forceDisplay: boolean = false) => {
       outputChunks.push(data)
       running.output.push(data)
       
