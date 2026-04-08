@@ -78,19 +78,24 @@ export async function generateOpencodeCommand(taskId: number): Promise<GenerateC
   const systemPrompt = `You are an expert at generating OpenCode CLI commands based on task descriptions.
 
 OpenCode is a CLI tool that uses AI to help with coding tasks. Common commands include:
-- /fix [description] - Fix bugs or issues
-- /review - Review code for improvements
-- /refactor [description] - Refactor code
-- /implement [description] - Implement new features
-- /test [description] - Write tests
-- /docs [description] - Generate documentation
-- /optimize [description] - Optimize performance
+- /fix [description] - Fix bugs or issues (e.g., "/fix authentication bug in login.ts")
+- /review - Review code for improvements (e.g., "/review security vulnerabilities in API")
+- /refactor [description] - Refactor code (e.g., "/refactor database queries for performance")
+- /implement [description] - Implement new features (e.g., "/implement user profile settings page")
+- /test [description] - Write tests (e.g., "/test user registration flow")
+- /docs [description] - Generate documentation (e.g., "/docs API endpoints")
+- /optimize [description] - Optimize performance (e.g., "/optimize image loading")
+
+CRITICAL: Always include a BRIEF, SPECIFIC description after the command word. The description should:
+- Be 3-10 words
+- Capture the essence of the task
+- Include relevant file names or components if mentioned
 
 Analyze the task details and generate the most appropriate opencode command.
 
 Respond ONLY in this JSON format:
 {
-  "command": "the command without 'opencode' prefix (e.g., '/fix authentication bug')",
+  "command": "the command without 'opencode' prefix (e.g., '/fix authentication bug in login.ts')",
   "explanation": "brief explanation of why this command fits the task",
   "autoExecute": true/false (whether this seems safe to auto-run)
 }`
@@ -103,6 +108,8 @@ Status: ${context.taskStatus}
 Priority: ${context.taskPriority}
 Project: ${context.projectName}
 ${context.projectDescription ? `Project Description: ${context.projectDescription}` : ""}
+
+IMPORTANT: Include a brief description in the command, not just the command word. For example, use "/fix login timeout issue" not just "/fix".
 
 Based on this task, what opencode command would be most appropriate?`
 
@@ -170,7 +177,7 @@ async function callOpenAI(apiKey: string, systemPrompt: string, userPrompt: stri
         { role: "user", content: userPrompt },
       ],
       temperature: 0.3,
-      max_tokens: 300,
+      max_tokens: 500,
     }),
   })
 
@@ -193,7 +200,7 @@ async function callAnthropic(apiKey: string, systemPrompt: string, userPrompt: s
     },
     body: JSON.stringify({
       model: "claude-3-haiku-20240307",
-      max_tokens: 300,
+      max_tokens: 500,
       temperature: 0.3,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],
@@ -232,7 +239,7 @@ async function callCustomProvider(
           { role: "user", content: userPrompt },
         ],
         temperature: 0.3,
-        max_tokens: 300,
+        max_tokens: 500,
       }),
     })
 
@@ -254,7 +261,7 @@ async function callCustomProvider(
       },
       body: JSON.stringify({
         model,
-        max_tokens: 300,
+        max_tokens: 500,
         temperature: 0.3,
         system: systemPrompt,
         messages: [{ role: "user", content: userPrompt }],
@@ -284,25 +291,39 @@ function parseAIResponse(response: string): GenerateCommandResult {
     return JSON.parse(response)
   } catch {
     // Fallback: try to extract command from text
-    // Look for patterns like: /command, /command description, command: /command, etc.
-    // Only capture the command word and a short description (stop at period, newline, or "the most")
-    const commandMatch = response.match(/(?:command[:\s]*)?([\/][a-z-]+(?:\s+[a-z0-9\-_]+){0,5})/i)
-    let command = commandMatch ? commandMatch[1].trim() : "/review"
+    // Match: /command followed by description (up to 100 chars, stop at sentence end)
+    const commandMatch = response.match(/(?:command[:\s]*)?([\/][a-z-]+(?:\s+[^\n.]{1,100})?)/i)
+    let command = commandMatch ? commandMatch[1].trim() : ""
     
-    // Clean up the command - remove trailing punctuation and explanations
+    // Clean up the command
     command = command
       .replace(/\.$/, '')  // Remove trailing period
       .replace(/\s+(?:the|since|because|as|for)\s+.+$/i, '')  // Remove explanation clauses
       .trim()
     
-    // Ensure command starts with /
-    if (!command.startsWith('/')) {
-      command = '/' + command
+    // If we found a command, use it
+    if (command && command.startsWith('/')) {
+      return {
+        command,
+        explanation: "Generated command based on task analysis",
+        autoExecute: false,
+      }
     }
     
+    // Try another pattern: look for command word anywhere
+    const simpleMatch = response.match(/\/([a-z-]+)/i)
+    if (simpleMatch) {
+      return {
+        command: '/' + simpleMatch[1],
+        explanation: "Extracted command from AI response",
+        autoExecute: false,
+      }
+    }
+    
+    // Last resort: return a descriptive default
     return {
-      command,
-      explanation: "Generated command based on task analysis",
+      command: "/review code for improvements",
+      explanation: "Unable to parse AI response, defaulting to code review",
       autoExecute: false,
     }
   }
@@ -360,13 +381,15 @@ export async function previewOpencodeCommand(
   const systemPrompt = `You are an expert at generating OpenCode CLI commands.
 
 Common OpenCode commands:
-- /fix [description] - Fix bugs
-- /review - Code review
-- /refactor - Refactor code
-- /implement [feature] - Implement features
-- /test - Write tests
-- /docs - Documentation
-- /optimize - Performance optimization
+- /fix [description] - Fix bugs (e.g., "/fix login timeout issue")
+- /review - Code review (e.g., "/review security vulnerabilities")
+- /refactor - Refactor code (e.g., "/refactor API endpoints")
+- /implement [feature] - Implement features (e.g., "/implement user settings")
+- /test - Write tests (e.g., "/test authentication flow")
+- /docs - Documentation (e.g., "/docs API reference")
+- /optimize - Performance optimization (e.g., "/optimize database queries")
+
+CRITICAL: Always include a brief description (3-10 words) after the command word.
 
 Respond in JSON format:
 {
@@ -377,6 +400,8 @@ Respond in JSON format:
 
   const userPrompt = `Task Title: ${taskTitle}
 Description: ${taskDescription || "No description"}
+
+IMPORTANT: Include a brief description in the command, not just the command word.
 
 Suggest an opencode command:`
 
@@ -415,27 +440,70 @@ Suggest an opencode command:`
 
 function generateHeuristicCommand(title: string, description?: string): GenerateCommandResult {
   const text = (title + " " + (description || "")).toLowerCase()
+  const titleWords = title.split(' ').slice(0, 8).join(' ')
   
-  // Heuristic patterns
+  // Heuristic patterns - include more descriptive commands
   if (text.includes("bug") || text.includes("fix") || text.includes("error") || text.includes("crash")) {
-    return { command: "/fix " + title.slice(0, 50), explanation: "Task appears to be about fixing an issue", autoExecute: false }
+    return { 
+      command: `/fix ${titleWords}`, 
+      explanation: "Task appears to be about fixing an issue", 
+      autoExecute: false 
+    }
   }
   if (text.includes("test") || text.includes("spec")) {
-    return { command: "/test " + title.slice(0, 50), explanation: "Task involves writing tests", autoExecute: false }
+    return { 
+      command: `/test ${titleWords}`, 
+      explanation: "Task involves writing tests", 
+      autoExecute: false 
+    }
   }
   if (text.includes("refactor") || text.includes("clean") || text.includes("improve code")) {
-    return { command: "/refactor " + title.slice(0, 50), explanation: "Task is about code refactoring", autoExecute: false }
+    return { 
+      command: `/refactor ${titleWords}`, 
+      explanation: "Task is about code refactoring", 
+      autoExecute: false 
+    }
   }
-  if (text.includes("doc") || text.includes("readme")) {
-    return { command: "/docs " + title.slice(0, 50), explanation: "Task involves documentation", autoExecute: true }
+  if (text.includes("doc") || text.includes("readme") || text.includes("documentation")) {
+    return { 
+      command: `/docs ${titleWords}`, 
+      explanation: "Task involves documentation", 
+      autoExecute: true 
+    }
   }
   if (text.includes("performance") || text.includes("slow") || text.includes("optimize")) {
-    return { command: "/optimize " + title.slice(0, 50), explanation: "Task is about performance optimization", autoExecute: false }
+    return { 
+      command: `/optimize ${titleWords}`, 
+      explanation: "Task is about performance optimization", 
+      autoExecute: false 
+    }
   }
-  if (text.includes("implement") || text.includes("add") || text.includes("create")) {
-    return { command: "/implement " + title.slice(0, 50), explanation: "Task is implementing a new feature", autoExecute: false }
+  if (text.includes("implement") || text.includes("add") || text.includes("create") || text.includes("build")) {
+    return { 
+      command: `/implement ${titleWords}`, 
+      explanation: "Task is implementing a new feature", 
+      autoExecute: false 
+    }
+  }
+  if (text.includes("security") || text.includes("vulnerability") || text.includes("secure")) {
+    return { 
+      command: `/review security aspects of ${titleWords}`, 
+      explanation: "Task involves security considerations", 
+      autoExecute: false 
+    }
+  }
+  if (text.includes("review") || text.includes("audit") || text.includes("check")) {
+    return { 
+      command: `/review ${titleWords}`, 
+      explanation: "Task requires code review or audit", 
+      autoExecute: true 
+    }
   }
   
-  // Default
-  return { command: "/review", explanation: "General code review recommended", autoExecute: true }
+  // Default - be more descriptive
+  return { 
+    command: `/review code for ${titleWords}`, 
+    explanation: "General code review recommended", 
+    autoExecute: false 
+  }
 }
