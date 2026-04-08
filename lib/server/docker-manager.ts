@@ -229,3 +229,38 @@ export async function healthCheck(): Promise<boolean> {
     return false
   }
 }
+
+export async function imageExists(imageName: string): Promise<boolean> {
+  try {
+    const images = await docker.listImages({
+      filters: {
+        reference: [imageName],
+      },
+    })
+    return images.length > 0
+  } catch {
+    return false
+  }
+}
+
+export async function initializeDockerEnvironment(): Promise<void> {
+  console.log("[docker-manager] Checking Docker environment...")
+  
+  const isHealthy = await healthCheck()
+  if (!isHealthy) {
+    throw new Error("Docker daemon is not running or not accessible")
+  }
+  
+  console.log("[docker-manager] Docker daemon is running")
+  
+  const hasImage = await imageExists(IMAGE_NAME)
+  if (!hasImage) {
+    console.log(`[docker-manager] Image ${IMAGE_NAME} not found, building...`)
+    await buildRunnerImage()
+    console.log(`[docker-manager] Image ${IMAGE_NAME} built successfully`)
+  } else {
+    console.log(`[docker-manager] Image ${IMAGE_NAME} exists`)
+  }
+  
+  console.log("[docker-manager] Docker environment ready")
+}

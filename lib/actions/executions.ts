@@ -15,10 +15,13 @@ import {
   type ExecutionOptions,
 } from "@/lib/server/cli-executor"
 import { getCustomProviderEnvVars } from "./custom-providers"
+import { getOrganizationWorkspacePath } from "@/lib/server/workspace"
 
 export async function executeTask(taskId: number): Promise<TaskExecution> {
   const { userId } = await auth()
   if (!userId) throw new Error("Unauthorized")
+
+  console.log(`[executeTask] Starting execution for task ${taskId}`)
 
   const [task] = await db
     .select()
@@ -28,6 +31,8 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
 
   if (!task) throw new Error("Task not found")
   if (!task.opencodeCommand) throw new Error("Task has no opencode command")
+  
+  console.log(`[executeTask] Task found: ${task.title}, command: ${task.opencodeCommand.substring(0, 50)}...`)
 
   const [project] = await db
     .select()
@@ -61,6 +66,8 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
     console.error("Failed to load custom provider env vars:", error)
   }
 
+  console.log(`[executeTask] Calling startExecution with command: ${task.opencodeCommand.substring(0, 50)}...`)
+  
   const execution = await startExecution({
     taskId,
     projectId: project.id,
@@ -68,10 +75,12 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
     organizationId: org.id,
     orgSlug: org.slug,
     command: task.opencodeCommand,
-    workingDirectory: `/workspace/${org.slug}`,
+    workingDirectory: getOrganizationWorkspacePath(org.slug),
     env,
     branch: project.gitBranch || undefined,
   })
+  
+  console.log(`[executeTask] Execution started: ${execution.id}`)
 
   revalidatePath(`/tasks/${taskId}`)
   return execution

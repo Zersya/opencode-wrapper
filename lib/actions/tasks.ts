@@ -165,6 +165,23 @@ export async function updateTask(
   }
 
   const updatePayload: Record<string, any> = { ...updateData }
+  
+  // Clean up opencodeCommand if provided
+  if (updateData.opencodeCommand !== undefined && updateData.opencodeCommand) {
+    let command = updateData.opencodeCommand.trim()
+    
+    // Take the first line only (remove any multi-line explanations)
+    command = command.split('\n')[0].trim()
+    
+    // Strip leading slash if present (old format cleanup)
+    if (command.startsWith('/')) {
+      command = command.substring(1).trim()
+    }
+    
+    updatePayload.opencodeCommand = command
+    console.log(`[updateTask] Cleaned opencodeCommand: "${command}"`)
+  }
+  
   if (updateData.dueDate !== undefined) {
     updatePayload.dueDate = updateData.dueDate ? new Date(updateData.dueDate) : null
   }
