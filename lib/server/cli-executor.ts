@@ -441,8 +441,10 @@ async function runExecution(
         try {
           await client.deleteSession(session.id)
           logWrapper(`Deleted session ${session.id}`)
+          running.sessionId = undefined  // Clear to prevent double-delete
         } catch (error) {
           console.error(`[opencode] Error deleting session:`, error)
+          // Don't rethrow - session might already be gone which is fine
         }
         
         // Mark as complete

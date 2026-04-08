@@ -220,6 +220,11 @@ export class OpenCodeAPIClient {
     })
 
     if (!response.ok) {
+      // If session is already gone (404), that's fine for cleanup
+      if (response.status === 404) {
+        console.log(`[opencode-api] Session ${sessionId} already deleted or not found`)
+        return
+      }
       throw new Error(`Failed to delete session: ${response.statusText}`)
     }
 
