@@ -9,9 +9,15 @@ const PATTERNS = {
   wrapper: /^\[opencode-wrapper\]/,
   
   question: {
-    input: /(?:please\s+(?:provide|enter|input)|what\s+(?:is|are)|how\s+(?:do|can|should)|enter\s+(?:the|your)|input:?\s*$|:\s*$)/i,
-    choice: /(?:choose|select|pick|option|which)\s*(?:\d+:|\(\[\]\d[\)\]]|:?\s*$)/i,
-    confirmation: /(?:proceed\?|continue\?|confirm\?|yes\/no|y\/n|are you sure)/i,
+    // CRITICAL: Only match actual questions that end with ? AND ask user for input
+    // AI thinking/planning text like "I should:" or "Let me:" should NOT match
+    // Must have: question mark at end + be directed at user (not self-reflection)
+    
+    input: /\?\s*$/i,  // Simple: must end with question mark
+    
+    choice: /(?:choose|select|pick|which)\s+(?:\d+:|from|between|one of)[^.!?]*\?\s*$/i,
+    
+    confirmation: /(?:proceed|continue|confirm|are you sure|should i|would you|do you want)[^.!?]*\?\s*$/i,
   },
   
   opencodeStart: /^(\s*)(?:user|assistant|system|tool):\s*/i,
