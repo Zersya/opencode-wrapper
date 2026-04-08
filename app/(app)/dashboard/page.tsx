@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { LinkButton } from "@/components/ui/link-button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { getDashboardStats, getRecentTasks, getProjectSummaries } from "@/lib/actions/dashboard"
@@ -125,9 +126,7 @@ export default async function DashboardPage() {
           <p className="text-gray-400 mb-6">
             You need to create or join an organization to get started.
           </p>
-          <Button asChild>
-            <Link href="/settings/organization">Create Organization</Link>
-          </Button>
+          <LinkButton href="/settings/organization">Create Organization</LinkButton>
         </div>
       </div>
     )
@@ -177,9 +176,9 @@ export default async function DashboardPage() {
         <Card className="lg:col-span-2 bg-[#1a1d21] border-gray-800">
           <CardHeader className="flex flex-row items-center justify-between pb-4">
             <CardTitle className="text-lg font-medium text-white">Recent Tasks</CardTitle>
-            <Button variant="ghost" size="sm" className="text-gray-400 hover:text-white" asChild>
-              <Link href="/issues">View all</Link>
-            </Button>
+            <LinkButton variant="ghost" size="sm" className="text-gray-400 hover:text-white" href="/issues">
+              View all
+            </LinkButton>
           </CardHeader>
           <CardContent className="px-2">
             {recentTasks.length > 0 ? (
@@ -218,18 +217,14 @@ export default async function DashboardPage() {
                 </Button>
               }
             />
-            <Button variant="outline" className="w-full justify-start gap-2 border-gray-700 hover:bg-gray-800" asChild>
-              <Link href="/issues">
-                <Folder className="h-4 w-4" />
-                View my issues
-              </Link>
-            </Button>
-            <Button variant="outline" className="w-full justify-start gap-2 border-gray-700 hover:bg-gray-800" asChild>
-              <Link href="/inbox">
-                <Zap className="h-4 w-4" />
-                Check notifications
-              </Link>
-            </Button>
+            <LinkButton variant="outline" className="w-full justify-start gap-2 border-gray-700 hover:bg-gray-800" href="/issues">
+              <Folder className="h-4 w-4" />
+              View my issues
+            </LinkButton>
+            <LinkButton variant="outline" className="w-full justify-start gap-2 border-gray-700 hover:bg-gray-800" href="/inbox">
+              <Zap className="h-4 w-4" />
+              Check notifications
+            </LinkButton>
 
             <div className="pt-4 border-t border-gray-800">
               <p className="text-xs text-gray-500 mb-3">Shortcuts</p>

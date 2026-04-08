@@ -1,9 +1,9 @@
 "use client"
 
 import { useEffect } from "react"
-import Link from "next/link"
 import { AlertTriangle, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { LinkButton } from "@/components/ui/link-button"
 
 export default function GlobalError({
   error,
@@ -29,12 +29,10 @@ export default function GlobalError({
               We&apos;ve encountered an unexpected error. Please try again or contact support if the problem persists.
             </p>
             <div className="flex items-center justify-center gap-3">
-              <Button variant="outline" asChild>
-                <Link href="/">
-                  <ArrowLeft className="h-4 w-4 mr-2" />
-                  Go home
-                </Link>
-              </Button>
+              <LinkButton variant="outline" href="/">
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Go home
+              </LinkButton>
               <Button onClick={reset}>Try again</Button>
             </div>
           </div>

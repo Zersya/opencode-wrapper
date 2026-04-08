@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { auth } from "@clerk/nextjs/server"
 import { Folder, ArrowRight, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { LinkButton } from "@/components/ui/link-button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { getProjects } from "@/lib/actions/projects"
@@ -25,9 +26,7 @@ export default async function ProjectsPage() {
           <p className="text-gray-400 mb-6">
             You need to create or join an organization to view projects.
           </p>
-          <Button asChild>
-            <Link href="/settings/organization">Create Organization</Link>
-          </Button>
+          <LinkButton href="/settings/organization">Create Organization</LinkButton>
         </div>
       </div>
     )
