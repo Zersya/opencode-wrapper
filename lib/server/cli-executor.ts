@@ -15,8 +15,10 @@ import {
   publishStatus,
   publishComplete,
   publishError,
+  publishQuestion,
 } from "./execution-stream"
 import { createOpenCodeClient, type OpenCodeEvent } from "./opencode-api-client"
+import { processOutput, type ProcessedOutput } from "./output-filter"
 
 const execAsync = promisify(exec)
 
@@ -88,6 +90,8 @@ export interface RunningExecution {
   containerExec: Promise<void> | null
   output: string[]
   status: "running" | "success" | "failed" | "canceled"
+  waitingForInput: boolean
+  questionPrompt?: string
 }
 
 // Use globalThis to ensure Map is shared across all module instances
@@ -137,16 +141,43 @@ async function runExecution(
       containerExec: null,
       output: [],
       status: "running",
+      waitingForInput: false,
     }
     runningExecutions.set(executionId, running)
 
     const outputChunks: string[] = []
 
-    const appendOutput = (data: string) => {
+    const logWrapper = (message: string) => {
+      const fullMessage = `[opencode-wrapper] ${message}\n`
+      outputChunks.push(fullMessage)
+      running.output.push(fullMessage)
+      console.log(`[cli-executor:wrapper] ${message}`)
+    }
+
+    const appendOutput = (data: string, forceDisplay: boolean = false) => {
       outputChunks.push(data)
       running.output.push(data)
-      // Real-time publish to SSE subscribers
-      publishOutput(executionId, data)
+      
+      const processed = processOutput(data)
+      
+      if (processed.type === "wrapper") {
+        console.log(`[cli-executor:wrapper] ${data.trim()}`)
+      } else if (forceDisplay || processed.shouldDisplay) {
+        publishOutput(executionId, processed.content)
+        
+        if (processed.isQuestion) {
+          running.waitingForInput = true
+          running.questionPrompt = processed.content
+          console.log(`[cli-executor] OpenCode is asking: ${processed.questionType}`)
+          console.log(`[cli-executor] Question: ${processed.content.substring(0, 100)}...`)
+          
+          publishQuestion(
+            executionId,
+            processed.content,
+            processed.questionType || "input"
+          )
+        }
+      }
     }
 
     const useDocker = process.env.USE_DOCKER === "true"
@@ -164,12 +195,12 @@ async function runExecution(
 
     // Ensure workspace directory exists
     const workspacePath = ensureWorkspaceExists(options.orgSlug)
-    appendOutput(`[opencode-wrapper] Workspace ready at: ${workspacePath}\n`)
+    logWrapper(`Workspace ready at: ${workspacePath}`)
     
     let cloneResult: { success: boolean; path: string; error?: string }
     
     if (gitRepoUrl) {
-      appendOutput("[opencode-wrapper] Cloning repository...\n")
+      logWrapper("Cloning repository...")
       cloneResult = await cloneRepository({
         projectId: options.projectId,
         workingDirectory: workspacePath,
@@ -179,7 +210,7 @@ async function runExecution(
       })
 
       if (!cloneResult.success && !cloneResult.error?.includes("already exists")) {
-        appendOutput(`[opencode-wrapper] Clone failed: ${cloneResult.error}\n`)
+        logWrapper(`Clone failed: ${cloneResult.error}`)
         await db
           .update(taskExecutions)
           .set({
@@ -194,14 +225,14 @@ async function runExecution(
         return
       }
 
-      appendOutput(`[opencode-wrapper] Repository ready at: ${cloneResult.path}\n`)
+      logWrapper(`Repository ready at: ${cloneResult.path}`)
     } else {
       // No git repo configured, use workspace directory directly
       cloneResult = { success: true, path: workspacePath }
-      appendOutput(`[opencode-wrapper] Using workspace directory: ${workspacePath}\n`)
+      logWrapper(`Using workspace directory: ${workspacePath}`)
     }
 
-    appendOutput(`[opencode-wrapper] Starting opencode execution...\n\n`)
+    logWrapper("Starting opencode execution...")
 
     const workingDir = cloneResult.path || options.workingDirectory
     
@@ -269,7 +300,7 @@ async function runExecution(
           { cwd: workingDir }
         )
         if (mkdirResult.exitCode !== 0) {
-          appendOutput(`[opencode-wrapper] Failed to create directory: ${mkdirResult.stderr}\n`)
+          logWrapper(`Failed to create directory: ${mkdirResult.stderr}`)
         }
       }
       
@@ -279,8 +310,9 @@ async function runExecution(
         { cwd: workingDir, env: envVars }
       )
 
-      appendOutput(result.stdout)
-      appendOutput(result.stderr)
+      // Filter and append stdout/stderr
+      if (result.stdout) appendOutput(result.stdout)
+      if (result.stderr) appendOutput(result.stderr)
 
       await db
         .update(taskExecutions)
@@ -304,7 +336,7 @@ async function runExecution(
       const installCheck = await ensureOpenCodeInstalled()
       
       if (!installCheck.installed) {
-        appendOutput(`[opencode-wrapper] Failed to install OpenCode CLI: ${installCheck.error}\n`)
+        logWrapper(`Failed to install OpenCode CLI: ${installCheck.error}`)
         await db
           .update(taskExecutions)
           .set({
@@ -318,7 +350,7 @@ async function runExecution(
         return
       }
       
-      appendOutput(`[opencode-wrapper] OpenCode CLI ready: ${installCheck.version} at ${installCheck.path}\n`)
+      logWrapper(`OpenCode CLI ready: ${installCheck.version} at ${installCheck.path}`)
       
       // FORCE UNBUFFERED OUTPUT - This is the key fix!
       const env = {
@@ -354,13 +386,13 @@ async function runExecution(
       console.log(`[cli-executor] Working directory:`, workingDir)
       
       // Spawn WITHOUT shell to avoid shell buffering
-      // Use 'pipe' for all stdio to ensure we capture everything
+      // Use 'pipe' for all stdio to ensure we capture everything and can send input
       const child = spawn(opencodePath, fullArgs, {
         cwd: workingDir,
         env,
         shell: false, // CRITICAL: Don't use shell - it adds buffering
         detached: false, // Keep attached so we can track output
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'], // Allow stdin for interactive responses
       })
 
       running.process = child
@@ -382,7 +414,7 @@ async function runExecution(
       // Handle process errors (spawn failures, etc)
       child.on("error", (error) => {
         console.error(`[cli-executor] Process error:`, error)
-        appendOutput(`[opencode-wrapper] Process error: ${error.message}\n`)
+        logWrapper(`Process error: ${error.message}`)
       })
 
       await new Promise<void>((resolve) => {
@@ -566,4 +598,67 @@ export async function listTaskExecutions(taskId: number): Promise<TaskExecution[
 export function isExecutionRunning(executionId: number): boolean {
   const running = runningExecutions.get(executionId)
   return running?.status === "running"
+}
+
+export function isWaitingForInput(executionId: number): boolean {
+  const running = runningExecutions.get(executionId)
+  return running?.waitingForInput || false
+}
+
+export function getQuestionPrompt(executionId: number): string | undefined {
+  const running = runningExecutions.get(executionId)
+  return running?.questionPrompt
+}
+
+export function sendInputToExecution(
+  executionId: number, 
+  input: string
+): { success: boolean; error?: string } {
+  const running = runningExecutions.get(executionId)
+  
+  if (!running) {
+    return { 
+      success: false, 
+      error: "Execution not found or not running" 
+    }
+  }
+
+  if (!running.process) {
+    return { 
+      success: false, 
+      error: "No active process for this execution" 
+    }
+  }
+
+  if (!running.waitingForInput) {
+    console.warn(`[cli-executor] Sending input to execution ${executionId} but it's not waiting for input`)
+  }
+
+  try {
+    const child = running.process
+    
+    if (!child.stdin || !child.stdin.writable) {
+      return { 
+        success: false, 
+        error: "Process stdin is not available for writing" 
+      }
+    }
+
+    const inputWithNewline = input.endsWith('\n') ? input : input + '\n'
+    
+    child.stdin.write(inputWithNewline)
+    
+    console.log(`[cli-executor] Sent input to execution ${executionId}: "${input.substring(0, 50)}..."`)
+    
+    running.waitingForInput = false
+    running.questionPrompt = undefined
+    
+    return { success: true }
+  } catch (error) {
+    console.error(`[cli-executor] Error sending input to execution ${executionId}:`, error)
+    return { 
+      success: false, 
+      error: `Failed to send input: ${error}` 
+    }
+  }
 }

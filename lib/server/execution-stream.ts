@@ -1,13 +1,14 @@
 import { runningExecutions } from "./cli-executor"
 
 export interface StreamEvent {
-  type: "output" | "status" | "complete" | "error"
+  type: "output" | "status" | "complete" | "error" | "question"
   payload: {
     output?: string
     status?: string
     exitCode?: number
     error?: string
     timestamp: string
+    questionType?: "input" | "choice" | "confirmation"
   }
 }
 
@@ -203,6 +204,22 @@ export function publishError(executionId: number, error: string): void {
     subscribers.delete(executionId)
     outputBuffers.delete(executionId)
   }, 10000)
+}
+
+export function publishQuestion(
+  executionId: number,
+  question: string,
+  questionType: "input" | "choice" | "confirmation" = "input"
+): void {
+  publishToExecution(executionId, {
+    type: "question",
+    payload: {
+      output: question,
+      questionType,
+      status: "waiting_for_input",
+      timestamp: new Date().toISOString(),
+    },
+  })
 }
 
 export function getSubscriberCount(executionId: number): number {

@@ -1,5 +1,14 @@
 # OpenCode SSE Streaming Fix
 
+## ✅ LATEST IMPROVEMENTS
+
+**See:** `OUTPUT_FILTERING_IMPROVEMENTS.md` for the latest enhancements:
+- Filtered output (wrapper logs hidden from users)
+- Question detection (opencode asking users)
+- Interactive input handling (respond to questions)
+
+---
+
 ## Problem Identified
 
 The issue was that `opencode run "command"` was **buffering output internally** before sending it to stdout/stderr. This caused:
