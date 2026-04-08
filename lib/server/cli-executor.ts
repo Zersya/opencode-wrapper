@@ -16,6 +16,7 @@ import {
   publishComplete,
   publishError,
 } from "./execution-stream"
+import { createOpenCodeClient, type OpenCodeEvent } from "./opencode-api-client"
 
 const execAsync = promisify(exec)
 
@@ -319,51 +320,59 @@ async function runExecution(
       
       appendOutput(`[opencode-wrapper] OpenCode CLI ready: ${installCheck.version} at ${installCheck.path}\n`)
       
+      // FORCE UNBUFFERED OUTPUT - This is the key fix!
       const env = {
         ...process.env,
         ...options.env,
+        // Force Node.js to flush output immediately
+        NODE_OPTIONS: "--no-warnings",
+        // Disable all buffering
+        FORCE_COLOR: "1",
+        TERM: "xterm-256color",
+        // Python unbuffered (if opencode uses Python internally)
+        PYTHONUNBUFFERED: "1",
+        // Node.js unbuffered
+        NODE_NO_WARNINGS: "1",
       }
 
       // Use the full path to opencode to avoid PATH issues
       const opencodePath = installCheck.path || "opencode"
       
       // Build the command for opencode CLI
-      // opencode run "command" - runs opencode with the given command/message
       const commandString = commandArgs.join(' ')
       
-      // Escape the command for shell execution
-      const escapedCommand = commandString.includes('"') 
-        ? commandString.replace(/"/g, '\\"') 
-        : commandString
-      
       // Construct full command: opencode run "/command description"
-      const fullCommand = `${opencodePath} run "${escapedCommand}"`
+      // DO NOT use shell string concatenation - pass args directly to avoid shell buffering
+      const fullArgs = [
+        "run",
+        commandString,
+        "--print-logs", // Force log output to stderr for real-time streaming
+      ]
       
-      // Debug logging
-      console.log(`[cli-executor] Command string: "${commandString}"`)
-      console.log(`[cli-executor] Full command: ${fullCommand}`)
+      console.log(`[cli-executor] Command: "${commandString}"`)
+      console.log(`[cli-executor] Args:`, fullArgs)
       console.log(`[cli-executor] Working directory:`, workingDir)
       
-      // Spawn with shell:true to properly handle the command string
-      // Use detached:true to create a new process group for proper cleanup
-      const child = spawn(fullCommand, {
+      // Spawn WITHOUT shell to avoid shell buffering
+      // Use 'pipe' for all stdio to ensure we capture everything
+      const child = spawn(opencodePath, fullArgs, {
         cwd: workingDir,
         env,
-        shell: true,
-        detached: true,
+        shell: false, // CRITICAL: Don't use shell - it adds buffering
+        detached: false, // Keep attached so we can track output
         stdio: ['ignore', 'pipe', 'pipe'],
       })
 
       running.process = child
 
-      // Handle stdout data
+      // Handle stdout data - FLUSH IMMEDIATELY
       child.stdout?.on("data", (data) => {
         const str = data.toString()
         console.log(`[cli-executor] stdout: ${str.substring(0, 100)}...`)
         appendOutput(str)
       })
 
-      // Handle stderr data
+      // Handle stderr data - FLUSH IMMEDIATELY  
       child.stderr?.on("data", (data) => {
         const str = data.toString()
         console.log(`[cli-executor] stderr: ${str.substring(0, 100)}...`)
