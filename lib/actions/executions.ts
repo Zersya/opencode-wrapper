@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { auth } from "@clerk/nextjs/server"
 import { eq } from "drizzle-orm"
 import { db } from "@/lib/db"
-import { tasks, taskExecutions, organizations, type TaskExecution } from "@/lib/db/schema"
+import { tasks, taskExecutions, organizations, projects, type TaskExecution } from "@/lib/db/schema"
 import { decryptApiKey } from "@/lib/server/encryption"
 import {
   startExecution,
@@ -29,24 +29,33 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
   if (!task) throw new Error("Task not found")
   if (!task.opencodeCommand) throw new Error("Task has no opencode command")
 
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, task.projectId))
+    .limit(1)
+
+  if (!project) throw new Error("Project not found")
+
   const [org] = await db
     .select()
     .from(organizations)
-    .where(eq(organizations.id, task.projectId))
+    .where(eq(organizations.id, project.organizationId))
     .limit(1)
+
+  if (!org) throw new Error("Organization not found")
 
   const env: Record<string, string> = {}
 
-  if (org?.openaiApiKey) {
+  if (org.openaiApiKey) {
     env.OPENAI_API_KEY = decryptApiKey(org.openaiApiKey)
   }
-  if (org?.anthropicApiKey) {
+  if (org.anthropicApiKey) {
     env.ANTHROPIC_API_KEY = decryptApiKey(org.anthropicApiKey)
   }
 
-  // Add custom provider environment variables
   try {
-    const customProviderEnvVars = await getCustomProviderEnvVars(org?.id || 1)
+    const customProviderEnvVars = await getCustomProviderEnvVars(org.id)
     Object.assign(env, customProviderEnvVars)
   } catch (error) {
     console.error("Failed to load custom provider env vars:", error)
@@ -54,11 +63,13 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
 
   const execution = await startExecution({
     taskId,
+    projectId: project.id,
     userId,
-    organizationId: org?.id || 1,
+    organizationId: org.id,
     command: task.opencodeCommand,
-    workingDirectory: `/workspace/${org?.slug || "default"}`,
+    workingDirectory: `/workspace/${org.slug}`,
     env,
+    branch: project.gitBranch || undefined,
   })
 
   revalidatePath(`/tasks/${taskId}`)
