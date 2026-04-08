@@ -39,11 +39,14 @@ export function subscribeToExecution(
 
   const executionSubscribers = subscribers.get(executionId)!
   executionSubscribers.add(callback)
+  
+  console.log(`[SSE] New subscriber for execution ${executionId}, total: ${executionSubscribers.size}`)
 
   // IMMEDIATELY flush any buffered output to this new subscriber
   const buffered = outputBuffers.get(executionId)
   if (buffered && buffered.length > 0) {
     const output = buffered.join("")
+    console.log(`[SSE] Flushing ${buffered.length} buffered chunks (${output.length} chars) to new subscriber for ${executionId}`)
     callback({
       type: "output",
       payload: {
@@ -99,16 +102,23 @@ export function publishToExecution(
 export function publishOutput(executionId: number, output: string): void {
   const subscriberCount = getSubscriberCount(executionId)
   
+  // Log for debugging
+  if (output.length > 0 && !output.includes("[opencode-wrapper]")) {
+    console.log(`[SSE] publishOutput called for ${executionId}, ${output.length} chars, ${subscriberCount} subscribers`)
+  }
+  
   // Only buffer if no subscribers - otherwise send directly
   if (subscriberCount === 0) {
     if (!outputBuffers.has(executionId)) {
       outputBuffers.set(executionId, [])
     }
     outputBuffers.get(executionId)!.push(output)
+    console.log(`[SSE] Buffered output for ${executionId}, buffer size: ${outputBuffers.get(executionId)!.length}`)
     return
   }
   
   // We have subscribers, publish immediately
+  console.log(`[SSE] Publishing ${output.length} chars to ${subscriberCount} subscribers for ${executionId}`)
   publishToExecution(executionId, {
     type: "output",
     payload: {

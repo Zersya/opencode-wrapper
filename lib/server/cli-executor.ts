@@ -132,6 +132,9 @@ async function runExecution(
   executionId: number,
   options: ExecutionOptions
 ): Promise<void> {
+  console.log(`[runExecution] Starting execution ${executionId} for task ${options.taskId}`)
+  console.log(`[runExecution] Command: ${options.command.substring(0, 100)}...`)
+  
   try {
     await db
       .update(taskExecutions)
@@ -165,7 +168,13 @@ async function runExecution(
       
       const processed = processOutput(data)
       
+      // Debug logging
+      if (data.length > 50) {
+        console.log(`[cli-executor] appendOutput: ${data.length} chars, shouldDisplay: ${processed.shouldDisplay}, type: ${processed.type}`)
+      }
+      
       if (forceDisplay || processed.shouldDisplay) {
+        console.log(`[cli-executor] Publishing ${processed.content.length} chars to SSE`)
         publishOutput(executionId, processed.content)
         
         if (processed.isQuestion) {
@@ -329,19 +338,58 @@ async function runExecution(
       // REST API approach - uses opencode server for isolated execution
       // This provides better isolation and works reliably in Docker/Railway/Coolify
       
+      console.log(`[cli-executor] Starting REST API execution for task ${options.taskId}`)
+      
       try {
         // Create OpenCode API client
+        console.log(`[cli-executor] Creating OpenCode API client...`)
         const client = createOpenCodeClient("global")
         
+        // Verify server is healthy before creating session
+        console.log(`[cli-executor] Checking server health...`)
+        const isHealthy = await client.healthCheck()
+        console.log(`[cli-executor] Server health check result: ${isHealthy}`)
+        
+        if (!isHealthy) {
+          throw new Error("OpenCode server is not responding to health checks")
+        }
+        
         // Create a new session for this execution (isolated context)
+        console.log(`[cli-executor] Creating session...`)
         const session = await client.createSession(`Task ${options.taskId} - ${command.substring(0, 50)}`)
         running.sessionId = session.id
         
+        console.log(`[cli-executor] Session created: ${session.id}`)
         logWrapper(`Created OpenCode session: ${session.id}`)
         
+        // Wait a moment for session to be fully ready
+        await new Promise(r => setTimeout(r, 500))
+        
+        // Verify session was actually created and exists
+        console.log(`[cli-executor] Verifying session ${session.id} exists...`)
+        const verifySession = await client.getSession(session.id)
+        if (!verifySession) {
+          throw new Error(`Session ${session.id} was created but cannot be verified - server may have crashed`)
+        }
+        console.log(`[cli-executor] Session verified: ${verifySession.id}`)
+        
+        // Track server health during execution
+        let serverCrashed = false
+        let lastEventTime = Date.now()
+        let eventCount = 0
+        
         // Subscribe to SSE events for real-time output and questions
+        console.log(`[cli-executor] Subscribing to SSE events...`)
         const unsubscribe = await client.subscribeToEvents(
           (event: OpenCodeEvent) => {
+            lastEventTime = Date.now()
+            eventCount++
+            
+            // Log every 50 events for debugging
+            if (eventCount % 50 === 0) {
+              console.log(`[cli-executor] Received ${eventCount} SSE events so far`)
+            }
+            
             // Handle different event types
             switch (event.type) {
               case "stream.chunk":
@@ -351,19 +399,34 @@ async function runExecution(
                 }
                 break
                 
+              case "message.part.updated":
+                // Individual message part update - this is where the actual text comes in!
+                // OpenCode format: event.data.properties.part.text
+                const partText = event.data?.properties?.part?.text
+                if (partText && typeof partText === "string") {
+                  // Log first few chunks for debugging
+                  if (eventCount <= 5) {
+                    console.log(`[cli-executor] message.part.updated with ${partText.length} chars: "${partText.substring(0, 50)}..."`)
+                  }
+                  console.log(`[cli-executor] Calling appendOutput with ${partText.length} chars`)
+                  appendOutput(partText, true)
+                } else {
+                  // Debug: log what we got
+                  if (eventCount <= 10) {
+                    console.log(`[cli-executor] message.part.updated but no text found in:`, JSON.stringify(event.data).substring(0, 100))
+                  }
+                }
+                break
+                
               case "message.updated":
-                // Full message update - check for completion
+                // Full message update - check for completion and questions
                 if (event.data?.parts) {
                   const text = event.data.parts
                     .filter((p: any) => p.type === "text")
                     .map((p: any) => p.text)
                     .join("")
                   
-                  if (text) {
-                    appendOutput(text, true)
-                  }
-                  
-                  // Check if this is a question
+                  // Check if this is a question (assistant asking user)
                   if (event.data.role === "assistant" && isQuestion(text)) {
                     running.waitingForInput = true
                     running.questionPrompt = text
@@ -382,28 +445,56 @@ async function runExecution(
                 const errorMsg = event.data?.message || "Unknown error"
                 appendOutput(`Error: ${errorMsg}`)
                 console.error(`[opencode] Session error:`, errorMsg)
+                // Don't mark as crashed for application-level errors
                 break
+                
+              default:
+                // Log unhandled event types for debugging
+                if (eventCount <= 10) {
+                  console.log(`[cli-executor] Unhandled event type: ${event.type}`)
+                }
             }
           },
           (error: Error) => {
-            console.error(`[opencode] SSE error:`, error)
+            console.error(`[opencode] SSE connection error:`, error)
             appendOutput(`Connection error: ${error.message}`)
+            
+            // Check if this is a server crash (not just a connection issue)
+            const timeSinceLastEvent = Date.now() - lastEventTime
+            if (timeSinceLastEvent > 30000 && running.status === "running") {
+              console.error(`[opencode] Server appears to have crashed (no events for ${timeSinceLastEvent}ms, total events: ${eventCount})`)
+              serverCrashed = true
+              
+              // Fail fast as requested by user
+              running.status = "failed"
+              appendOutput(`\n[CRITICAL] OpenCode server crashed during execution. Marking as failed.`)
+            }
           }
         )
+        
+        console.log(`[cli-executor] SSE subscription established`)
         
         running.unsubscribe = unsubscribe
         
         // Send the command as a message to the session
-        await client.sendMessage(
-          session.id,
-          command,
-          {
-            model: {
-              providerID: "fireworks",
-              modelID: "accounts/fireworks/routers/kimi-k2p5-turbo",
-            },
-          }
-        )
+        console.log(`[cli-executor] Sending command to session ${session.id}...`)
+        
+        try {
+          const message = await client.sendMessage(
+            session.id,
+            command,
+            {
+              model: {
+                providerID: "fireworks",
+                modelID: "accounts/fireworks/routers/kimi-k2p5-turbo",
+              },
+            }
+          )
+          console.log(`[cli-executor] Message sent successfully, message ID: ${message.id}`)
+        } catch (sendError) {
+          console.error(`[cli-executor] Failed to send message:`, sendError)
+          throw sendError
+        }
         
         logWrapper(`Sent command to session ${session.id}`)
         
@@ -451,10 +542,62 @@ async function runExecution(
         }
         
         const sessionStartTime = Date.now()
+        let loopCount = 0
+        const NO_EVENTS_TIMEOUT = 120000 // 2 minutes with no events = assume stuck
+        const NO_OUTPUT_TIMEOUT = 90000 // 1.5 minutes with no output at all = fail
         
         // Wait loop
+        console.log(`[cli-executor] Starting wait loop for execution...`)
+        
         while (!isComplete) {
           await new Promise(resolve => setTimeout(resolve, 2000))
+          loopCount++
+          
+          const elapsed = Date.now() - sessionStartTime
+          const timeSinceLastEvent = Date.now() - lastEventTime
+          const timeSinceLastOutput = Date.now() - lastOutputTime
+          
+          // Log every 15 seconds (every 7-8 iterations)
+          if (loopCount % 7 === 0) {
+            console.log(`[cli-executor] Wait loop iteration ${loopCount}, elapsed: ${elapsed}ms, events: ${eventCount}, last event: ${timeSinceLastEvent}ms ago, last output: ${timeSinceLastOutput}ms ago, waitingForInput: ${running.waitingForInput}`)
+          }
+          
+          // Check if we've received no events for too long (SSE might be stuck)
+          if (eventCount === 0 && elapsed > NO_EVENTS_TIMEOUT && !running.waitingForInput) {
+            console.error(`[cli-executor] No SSE events received for ${elapsed}ms - execution appears stuck`)
+            serverCrashed = true
+            running.status = "failed"
+            appendOutput(`\n[CRITICAL] No events received from OpenCode server for ${elapsed/1000}s. The AI model may be unresponsive or the server failed to process the message. Please check your API keys and try again.`)
+            isComplete = true
+            break
+          }
+          
+          // Check if server crashed
+          if (serverCrashed) {
+            console.error(`[cli-executor] Aborting execution due to server crash`)
+            isComplete = true
+            running.status = "failed"
+            break
+          }
+          
+          // Check if session still exists (server might have restarted and lost it)
+          if (running.sessionId && !running.waitingForInput) {
+            try {
+              const session = await client.getSession(running.sessionId)
+              if (session === null) {
+                console.error(`[opencode] Session ${running.sessionId} no longer exists (server restarted?)`)
+                serverCrashed = true
+                isComplete = true
+                running.status = "failed"
+                appendOutput(`\n[CRITICAL] OpenCode session lost - server may have restarted. Marking as failed.`)
+                break
+              }
+            } catch (error) {
+              // Session check failed, might be transient
+              console.warn(`[opencode] Session check failed:`, error)
+            }
+          }
+          
           isComplete = checkCompletion()
           
           if (running.status === "canceled") {
@@ -479,7 +622,9 @@ async function runExecution(
         }
         
         // Mark as complete
-        const finalStatus = running.status === "canceled" ? "canceled" : "success"
+        const finalStatus = running.status === "canceled" ? "canceled" : serverCrashed ? "failed" : "success"
+        
+        console.log(`[cli-executor] Execution ${executionId} complete with status: ${finalStatus}`)
         
         await db
           .update(taskExecutions)
@@ -495,7 +640,7 @@ async function runExecution(
         publishComplete(executionId, finalStatus, finalStatus === "success" ? 0 : 1)
         
       } catch (error) {
-        console.error(`[opencode] REST API execution failed:`, error)
+        console.error(`[cli-executor] REST API execution failed with error:`, error)
         
         const errorMessage = error instanceof Error ? error.message : String(error)
         appendOutput(`Execution failed: ${errorMessage}`)
@@ -514,13 +659,18 @@ async function runExecution(
       }
     }
   } catch (error) {
-    console.error("Execution failed:", error)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorStack = error instanceof Error ? error.stack : ""
+    console.error(`[cli-executor] Outer execution catch for ${executionId}:`, errorMessage)
+    if (errorStack) {
+      console.error(`[cli-executor] Stack trace:`, errorStack)
+    }
 
     await db
       .update(taskExecutions)
       .set({
         status: "failed",
-        output: `Execution error: ${error}`,
+        output: `Execution error: ${errorMessage}`,
         completedAt: new Date(),
       })
       .where(eq(taskExecutions.id, executionId))
@@ -530,8 +680,9 @@ async function runExecution(
       running.status = "failed"
     }
     // Publish error event
-    publishError(executionId, String(error))
+    publishError(executionId, errorMessage)
   } finally {
+    console.log(`[cli-executor] Cleaning up execution ${executionId}`)
     runningExecutions.delete(executionId)
   }
 }
@@ -693,9 +844,22 @@ export async function sendInputToExecution(
   }
 
   try {
-    // Use REST API to send the user input as a new message
+    // Verify session still exists before sending
     const client = createOpenCodeClient("global")
+    const session = await client.getSession(running.sessionId)
     
+    if (session === null) {
+      console.error(`[cli-executor] Session ${running.sessionId} not found - server may have crashed`)
+      running.waitingForInput = false
+      running.questionPrompt = undefined
+      running.status = "failed"
+      return { 
+        success: false, 
+        error: "Session no longer exists - the OpenCode server may have crashed. Execution marked as failed." 
+      }
+    }
+    
+    // Use REST API to send the user input as a new message
     await client.sendMessage(
       running.sessionId,
       input,
@@ -714,10 +878,23 @@ export async function sendInputToExecution(
     
     return { success: true }
   } catch (error) {
-    console.error(`[cli-executor] Error sending input to execution ${executionId}:`, error)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    console.error(`[cli-executor] Error sending input to execution ${executionId}:`, errorMessage)
+    
+    // If session not found, mark execution as failed
+    if (errorMessage.includes("Session not found") || errorMessage.includes("404")) {
+      running.waitingForInput = false
+      running.questionPrompt = undefined
+      running.status = "failed"
+      return { 
+        success: false, 
+        error: "Session no longer exists - the OpenCode server may have crashed. Execution marked as failed." 
+      }
+    }
+    
     return { 
       success: false, 
-      error: `Failed to send input: ${error}` 
+      error: `Failed to send input: ${errorMessage}` 
     }
   }
 }

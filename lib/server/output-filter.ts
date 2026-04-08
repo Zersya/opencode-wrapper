@@ -19,10 +19,12 @@ const PATTERNS = {
   // Opencode's internal logs - comprehensive pattern to catch all operational logs
   // Matches: INFO 2026-04-08T17:17:31 +0ms service=bus type=message.part.delta publishing
   // Matches: WARN 2026-04-08T17:17:31 +49ms service=skill name=frontend-design ...
+  // NOTE: This is very specific to avoid filtering AI output that might contain these words
   opencodeLog: /^(?:INFO|WARN|ERROR|DEBUG)\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\s+[+-]\d+ms\s+service=/i,
   
-  // Alternative pattern for opencode logs without service= prefix
-  opencodeLogAlt: /^(?:INFO|WARN|ERROR|DEBUG)\s+\d{4}-\d{2}-\d{2}T/i,
+  // Alternative pattern for opencode logs - must have timestamp AND be at start of line
+  // This prevents filtering AI output that mentions "INFO" or "ERROR"
+  opencodeLogAlt: /^(?:INFO|WARN|ERROR|DEBUG)\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/i,
   
   // Only filter wrapper debug logs
   debugLog: /^\s*\[?(?:debug)\]?\s*[:\)]/i,
@@ -33,6 +35,11 @@ export function filterOutput(rawOutput: string): FilteredOutput {
   const conversationLines: string[] = []
   let isQuestion = false
   let questionType: "input" | "choice" | "confirmation" | undefined
+  
+  // Debug logging for first few calls
+  if (rawOutput.length > 100) {
+    console.log(`[output-filter] Filtering ${rawOutput.length} chars, ${lines.length} lines`)
+  }
 
   for (const line of lines) {
     const trimmedLine = line.trim()
@@ -92,7 +99,18 @@ export interface ProcessedOutput {
 }
 
 export function processOutput(rawOutput: string): ProcessedOutput {
+  // DEBUG: Log what we're processing
+  if (rawOutput.length > 50) {
+    console.log(`[output-filter] processOutput called with ${rawOutput.length} chars`)
+    console.log(`[output-filter] First 100 chars: "${rawOutput.substring(0, 100)}..."`)
+  }
+  
   const filtered = filterOutput(rawOutput)
+  
+  // DEBUG: Log filter results
+  if (rawOutput.length > 50) {
+    console.log(`[output-filter] Filtered to ${filtered.conversation.length} chars, isQuestion: ${filtered.isQuestion}`)
+  }
   
   if (PATTERNS.wrapper.test(rawOutput)) {
     return {
@@ -102,10 +120,12 @@ export function processOutput(rawOutput: string): ProcessedOutput {
     }
   }
   
-  if (filtered.conversation) {
+  // Show output if there's conversation content OR if it looks like AI response
+  // Don't require conversation to be non-empty - some valid AI output might be filtered
+  if (filtered.conversation || rawOutput.length > 0) {
     return {
       type: "conversation",
-      content: filtered.conversation,
+      content: filtered.conversation || rawOutput, // Fallback to raw if filtered is empty
       isQuestion: filtered.isQuestion,
       questionType: filtered.questionType,
       shouldDisplay: true,
