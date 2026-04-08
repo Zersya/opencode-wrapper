@@ -66,6 +66,7 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
     projectId: project.id,
     userId,
     organizationId: org.id,
+    orgSlug: org.slug,
     command: task.opencodeCommand,
     workingDirectory: `/workspace/${org.slug}`,
     env,
@@ -162,4 +163,44 @@ export async function getExecutionWithDetails(executionId: number): Promise<
     ...execution,
     task: task || undefined,
   }
+}
+
+export async function getAllExecutions(): Promise<
+  (TaskExecution & {
+    task?: { id: number; title: string; projectId: number }
+    organization?: { id: number; name: string; slug: string }
+  })[]
+> {
+  const { userId } = await auth()
+  if (!userId) throw new Error("Unauthorized")
+
+  const executions = await db
+    .select()
+    .from(taskExecutions)
+    .orderBy(taskExecutions.createdAt)
+
+  // Get related data for each execution
+  const executionsWithDetails = await Promise.all(
+    executions.map(async (execution) => {
+      const [task] = await db
+        .select({ id: tasks.id, title: tasks.title, projectId: tasks.projectId })
+        .from(tasks)
+        .where(eq(tasks.id, execution.taskId))
+        .limit(1)
+
+      const [org] = await db
+        .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
+        .from(organizations)
+        .where(eq(organizations.id, execution.organizationId))
+        .limit(1)
+
+      return {
+        ...execution,
+        task: task || undefined,
+        organization: org || undefined,
+      }
+    })
+  )
+
+  return executionsWithDetails
 }

@@ -4,6 +4,12 @@ import { taskExecutions, type TaskExecution } from "@/lib/db/schema"
 import { eq } from "drizzle-orm"
 import { execInContainer } from "./docker-manager"
 import { cloneRepository } from "./git-clone"
+import {
+  publishOutput,
+  publishStatus,
+  publishComplete,
+  publishError,
+} from "./execution-stream"
 
 function parseCommand(command: string): string[] {
   const args: string[] = []
@@ -42,6 +48,7 @@ export interface ExecutionOptions {
   projectId: number
   userId: string
   organizationId: number
+  orgSlug: string
   command: string
   workingDirectory: string
   env?: Record<string, string>
@@ -65,6 +72,8 @@ export interface RunningExecution {
 }
 
 const runningExecutions = new Map<number, RunningExecution>()
+
+export { runningExecutions }
 
 export async function startExecution(
   options: ExecutionOptions
@@ -109,9 +118,14 @@ async function runExecution(
     const appendOutput = (data: string) => {
       outputChunks.push(data)
       running.output.push(data)
+      // Real-time publish to SSE subscribers
+      publishOutput(executionId, data)
     }
 
     const useDocker = process.env.USE_DOCKER === "true"
+
+    // Publish status change to running
+    publishStatus(executionId, "running")
 
     appendOutput("[opencode-wrapper] Cloning repository...\n")
     const cloneResult = await cloneRepository({
@@ -133,6 +147,8 @@ async function runExecution(
         })
         .where(eq(taskExecutions.id, executionId))
       running.status = "failed"
+      // Publish error event
+      publishError(executionId, cloneResult.error || "Repository cloning failed")
       return
     }
 
@@ -175,6 +191,12 @@ async function runExecution(
         .where(eq(taskExecutions.id, executionId))
 
       running.status = result.exitCode === 0 ? "success" : "failed"
+      // Publish completion event
+      publishComplete(
+        executionId,
+        result.exitCode === 0 ? "success" : "failed",
+        result.exitCode ?? undefined
+      )
     } else {
       const env = {
         ...process.env,
@@ -214,6 +236,8 @@ async function runExecution(
             .where(eq(taskExecutions.id, executionId))
 
           running.status = status
+          // Publish completion event
+          publishComplete(executionId, status, code ?? undefined)
           resolve()
         })
 
@@ -230,6 +254,8 @@ async function runExecution(
             .where(eq(taskExecutions.id, executionId))
 
           running.status = "failed"
+          // Publish error event
+          publishError(executionId, error.message)
           resolve()
         })
       })
@@ -250,6 +276,8 @@ async function runExecution(
     if (running) {
       running.status = "failed"
     }
+    // Publish error event
+    publishError(executionId, String(error))
   } finally {
     runningExecutions.delete(executionId)
   }
@@ -272,6 +300,9 @@ export async function stopExecution(executionId: number): Promise<void> {
       completedAt: new Date(),
     })
     .where(eq(taskExecutions.id, executionId))
+
+  // Publish completion with canceled status
+  publishComplete(executionId, "canceled")
 }
 
 export async function getExecutionOutput(

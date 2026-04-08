@@ -16,6 +16,7 @@ import {
   Building2,
   LogOut,
   User,
+  Terminal,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -47,6 +48,7 @@ interface NavItem {
 const mainNavItems: NavItem[] = [
   { name: "Inbox", href: "/inbox", icon: Inbox },
   { name: "My Issues", href: "/issues", icon: LayoutGrid },
+  { name: "Executions", href: "/executions", icon: Terminal },
 ]
 
 interface SidebarProps {
