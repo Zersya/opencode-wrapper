@@ -407,35 +407,66 @@ async function runExecution(
         
         logWrapper(`Sent command to session ${session.id}`)
         
-        // Wait for execution to complete by monitoring session status
-        // Poll every 2 seconds to check if done
+        // Wait for execution to complete
+        // Track last output time to detect when agent goes idle
+        let lastOutputTime = Date.now()
         let isComplete = false
-        let attempts = 0
-        const maxAttempts = 600 // 20 minutes max (600 * 2 seconds)
+        const maxDuration = 20 * 60 * 1000 // 20 minutes max
+        const idleTimeout = 30 * 1000 // 30 seconds without output = idle
         
-        while (!isComplete && attempts < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 2000))
-          attempts++
+        // Monitor output to detect completion
+        const checkCompletion = () => {
+          const now = Date.now()
+          const timeSinceLastOutput = now - lastOutputTime
+          const totalDuration = now - sessionStartTime
           
-          try {
-            const sessionInfo = await client.getSession(session.id)
-            // Check if session has messages indicating completion
-            // This is a simplified check - in production you'd want more robust detection
-            
-            // If no new output for a while and session is idle, consider it complete
-            if (attempts > 30 && !running.waitingForInput) {
-              // Give it a bit more time after last output
-              isComplete = true
-            }
-          } catch (error) {
-            // Session might be deleted or error occurred
-            console.error(`[opencode] Error checking session:`, error)
+          // Mark as complete if:
+          // 1. We've been waiting for input (question) - user needs to respond
+          // 2. No output for 30 seconds AND not waiting for input = likely done
+          // 3. Total duration exceeds 20 minutes = timeout
+          if (running.waitingForInput) {
+            // Waiting for user input - pause but don't complete
+            return false
+          }
+          
+          if (timeSinceLastOutput > idleTimeout && totalDuration > 60000) {
+            // Idle for 30s and at least 1 minute passed = complete
+            console.log(`[opencode] Execution idle for ${timeSinceLastOutput}ms, marking complete`)
+            return true
+          }
+          
+          if (totalDuration > maxDuration) {
+            console.log(`[opencode] Execution timeout after ${totalDuration}ms`)
+            return true
+          }
+          
+          return false
+        }
+        
+        // Update lastOutputTime whenever we get output
+        const originalAppendOutput = appendOutput
+        appendOutput = (data: string, forceDisplay?: boolean) => {
+          lastOutputTime = Date.now()
+          originalAppendOutput(data, forceDisplay)
+        }
+        
+        const sessionStartTime = Date.now()
+        
+        // Wait loop
+        while (!isComplete) {
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          isComplete = checkCompletion()
+          
+          if (running.status === "canceled") {
             isComplete = true
           }
         }
         
         // Clean up
         unsubscribe()
+        
+        // Small delay to ensure any final output is captured
+        await new Promise(resolve => setTimeout(resolve, 2000))
         
         // Delete the session
         try {
