@@ -89,7 +89,15 @@ export interface RunningExecution {
   status: "running" | "success" | "failed" | "canceled"
 }
 
-const runningExecutions = new Map<number, RunningExecution>()
+// Use globalThis to ensure Map is shared across all module instances
+// (prevents issues with Next.js hot-reload and ESM module duplication)
+declare global {
+  // eslint-disable-next-line no-var
+  var __runningExecutions: Map<number, RunningExecution> | undefined
+}
+
+const runningExecutions: Map<number, RunningExecution> = 
+  globalThis.__runningExecutions || (globalThis.__runningExecutions = new Map())
 
 export { runningExecutions }
 
@@ -337,10 +345,12 @@ async function runExecution(
       console.log(`[cli-executor] Working directory:`, workingDir)
       
       // Spawn with shell:true to properly handle the command string
+      // Use detached:true to create a new process group for proper cleanup
       const child = spawn(fullCommand, {
         cwd: workingDir,
         env,
         shell: true,
+        detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
 
@@ -443,10 +453,52 @@ async function runExecution(
 
 export async function stopExecution(executionId: number): Promise<void> {
   const running = runningExecutions.get(executionId)
-  if (!running) return
+  if (!running) {
+    console.log(`[cli-executor] No running execution found for ${executionId}`)
+    return
+  }
 
   if (running.process) {
-    running.process.kill("SIGTERM")
+    const pid = running.process.pid
+    console.log(`[cli-executor] Stopping execution ${executionId}, PID: ${pid}`)
+    
+    try {
+      // Kill the entire process group (negative PID)
+      // This works because we spawned with detached: true
+      if (pid) {
+        // On Unix, negative PID kills the process group
+        // On Windows, we need to use taskkill
+        if (process.platform === 'win32') {
+          // Use taskkill to kill process tree on Windows
+          await execAsync(`taskkill /pid ${pid} /T /F`)
+        } else {
+          // Kill process group on Unix
+          process.kill(-pid, 'SIGTERM')
+          
+          // Give it a moment to terminate gracefully
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          
+          // Force kill if still running
+          try {
+            process.kill(-pid, 0) // Check if process exists
+            process.kill(-pid, 'SIGKILL') // Force kill
+          } catch {
+            // Process already dead
+          }
+        }
+      }
+      
+      // Also kill the main process directly as backup
+      running.process.kill('SIGTERM')
+    } catch (error) {
+      console.error(`[cli-executor] Error killing process:`, error)
+      // Try direct kill as fallback
+      try {
+        running.process.kill('SIGKILL')
+      } catch {
+        // Ignore if already dead
+      }
+    }
   }
 
   running.status = "canceled"
@@ -461,6 +513,8 @@ export async function stopExecution(executionId: number): Promise<void> {
 
   // Publish completion with canceled status
   publishComplete(executionId, "canceled")
+  
+  console.log(`[cli-executor] Execution ${executionId} stopped and marked as canceled`)
 }
 
 export async function getExecutionOutput(

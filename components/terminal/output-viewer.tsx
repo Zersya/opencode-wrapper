@@ -43,6 +43,8 @@ export function TerminalOutputViewer({
   const [isConnected, setIsConnected] = React.useState(false)
   const terminalRef = useRef<HTMLPreElement>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const hasConnectedRef = useRef(false)
+  const connectionAttemptsRef = useRef(0)
 
   const scrollToBottom = useCallback(() => {
     if (terminalRef.current) {
@@ -50,32 +52,19 @@ export function TerminalOutputViewer({
     }
   }, [])
 
-    // Track if we've already connected to avoid reconnection on status changes
-  const hasConnectedRef = useRef(false)
-  const connectionAttemptsRef = useRef(0)
-
-  // Setup SSE connection - only runs once when component mounts
+  // Setup SSE connection
   useEffect(() => {
-    // Connect for running/pending executions, skip for completed ones
     const completeStatuses = ["success", "failed", "canceled"]
-    const shouldConnect = !completeStatuses.includes(initialStatus) && !hasConnectedRef.current
+    const shouldConnect = !completeStatuses.includes(status) && !hasConnectedRef.current
     
-    console.log(`[Terminal] useEffect check - initialStatus=${initialStatus}, shouldConnect=${shouldConnect}, hasConnected=${hasConnectedRef.current}, executionId=${executionId}`)
+    console.log(`[Terminal] useEffect - status=${status}, shouldConnect=${shouldConnect}, executionId=${executionId}`)
     
-    if (!shouldConnect) {
-      if (completeStatuses.includes(initialStatus)) {
-        console.log(`[Terminal] Execution already complete (${initialStatus}), not connecting SSE`)
-      } else {
-        console.log(`[Terminal] Already connected, skipping`)
-      }
-      return
-    }
+    if (!shouldConnect) return
 
     connectionAttemptsRef.current++
     hasConnectedRef.current = true
 
-    // Create new SSE connection
-    console.log(`[Terminal] Connecting to SSE for execution ${executionId} (attempt ${connectionAttemptsRef.current})...`)
+    console.log(`[Terminal] Creating SSE connection for execution ${executionId} (attempt ${connectionAttemptsRef.current})...`)
     const eventSource = new EventSource(`/api/executions/${executionId}/stream`)
     eventSourceRef.current = eventSource
 
@@ -85,91 +74,99 @@ export function TerminalOutputViewer({
     }
 
     eventSource.onerror = (error) => {
-      console.error(`[Terminal] SSE connection error for execution ${executionId}:`, error)
+      console.error(`[Terminal] SSE connection error:`, error)
       setIsConnected(false)
-      // Close and let polling take over if SSE fails
       if (eventSourceRef.current === eventSource) {
         eventSource.close()
         eventSourceRef.current = null
+        hasConnectedRef.current = false // Allow reconnection
       }
     }
 
-    // Handle connected event
     eventSource.addEventListener("connected", (event: MessageEvent) => {
       console.log("[Terminal] SSE connected event:", event.data)
     })
 
-    // Handle heartbeat to keep connection alive
     eventSource.addEventListener("heartbeat", () => {
-      // Heartbeat received, connection is alive
+      // Heartbeat received, connection alive
     })
 
-    // Handle output events
     eventSource.addEventListener("output", (event: MessageEvent) => {
-      const data = JSON.parse(event.data)
-      console.log(`[Terminal] Received output event:`, data)
-      if (data.output) {
-        console.log(`[Terminal] Adding ${data.output.length} chars to output (current length: ${output.length})`)
-        setOutput((prev) => prev + data.output)
+      try {
+        const data = JSON.parse(event.data)
+        console.log(`[Terminal] Received output: ${data.output?.length || 0} chars`)
+        if (data.output) {
+          setOutput((prev) => {
+            const newOutput = prev + data.output
+            console.log(`[Terminal] Output updated: ${prev.length} -> ${newOutput.length} chars`)
+            return newOutput
+          })
+        }
+      } catch (err) {
+        console.error("[Terminal] Error parsing output event:", err)
       }
     })
 
-    // Handle status events
     eventSource.addEventListener("status", (event: MessageEvent) => {
-      const data = JSON.parse(event.data)
-      if (data.status && data.status !== status) {
-        setStatus(data.status)
-        onStatusChange?.(data.status)
+      try {
+        const data = JSON.parse(event.data)
+        console.log(`[Terminal] Status event:`, data.status)
+        if (data.status && data.status !== status) {
+          setStatus(data.status)
+          onStatusChange?.(data.status)
+        }
+      } catch (err) {
+        console.error("[Terminal] Error parsing status event:", err)
       }
     })
 
-    // Handle completion
     eventSource.addEventListener("complete", (event: MessageEvent) => {
-      const data = JSON.parse(event.data)
-      console.log(`[Terminal] Execution complete with status: ${data.status}`)
-      setStatus(data.status)
-      setIsConnected(false)
-      onStatusChange?.(data.status)
-      onComplete?.()
-      eventSource.close()
-      eventSourceRef.current = null
+      try {
+        const data = JSON.parse(event.data)
+        console.log(`[Terminal] Complete event: status=${data.status}`)
+        setStatus(data.status)
+        setIsConnected(false)
+        onStatusChange?.(data.status)
+        onComplete?.()
+        eventSource.close()
+        eventSourceRef.current = null
+      } catch (err) {
+        console.error("[Terminal] Error parsing complete event:", err)
+      }
     })
 
-    // Handle errors
     eventSource.addEventListener("error", (event: MessageEvent) => {
-      const data = JSON.parse(event.data)
-      console.error(`[Terminal] Execution error:`, data.error)
-      setStatus("failed")
-      setIsConnected(false)
-      onStatusChange?.("failed")
-      onComplete?.()
-      eventSource.close()
-      eventSourceRef.current = null
+      try {
+        const data = JSON.parse(event.data)
+        console.error(`[Terminal] Execution error event:`, data.error)
+        setStatus("failed")
+        setIsConnected(false)
+        onStatusChange?.("failed")
+        onComplete?.()
+        eventSource.close()
+        eventSourceRef.current = null
+      } catch (err) {
+        console.error("[Terminal] Error parsing error event:", err)
+      }
     })
 
-    // Cleanup on unmount only
     return () => {
-      console.log(`[Terminal] Component unmounting for execution ${executionId}`)
+      console.log(`[Terminal] Cleanup for execution ${executionId}`)
       if (eventSourceRef.current) {
-        console.log(`[Terminal] Closing SSE connection`)
         eventSourceRef.current.close()
         eventSourceRef.current = null
       }
-      // Reset connection flag so we can reconnect if component remounts
       hasConnectedRef.current = false
-      console.log(`[Terminal] Reset hasConnectedRef to false`)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [executionId]) // Only reconnect if executionId changes
 
-  // Polling fallback for when SSE fails or isn't available
+  // Polling fallback
   const [pollPosition, setPollPosition] = useState(0)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const isRunning = status === "running" || status === "pending"
 
-  // Polling fallback with delay to let SSE connect first
   useEffect(() => {
-    // Only poll if execution is running and SSE is not connected
     if (!isRunning || isConnected) {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current)
@@ -178,14 +175,9 @@ export function TerminalOutputViewer({
       return
     }
 
-    // Delay polling start to give SSE time to connect first (3 seconds)
-    console.log(`[Terminal] Will start polling in 3s if SSE doesn't connect...`)
+    // Delay polling to give SSE time
     const timeoutId = setTimeout(() => {
-      // Double-check SSE still hasn't connected
-      if (isConnected) {
-        console.log(`[Terminal] SSE connected, skipping polling`)
-        return
-      }
+      if (isConnected) return
       
       console.log(`[Terminal] Starting polling fallback for execution ${executionId}`)
       pollIntervalRef.current = setInterval(async () => {
@@ -207,7 +199,7 @@ export function TerminalOutputViewer({
         } catch (error) {
           console.error(`[Terminal] Polling error:`, error)
         }
-      }, 1000) // Poll every second
+      }, 2000)
     }, 3000)
 
     return () => {
@@ -219,7 +211,7 @@ export function TerminalOutputViewer({
     }
   }, [executionId, isRunning, isConnected, pollPosition, onStatusChange])
 
-  // Auto-scroll when output changes
+  // Auto-scroll
   useEffect(() => {
     scrollToBottom()
   }, [output, scrollToBottom])
@@ -228,7 +220,6 @@ export function TerminalOutputViewer({
 
   return (
     <div className={cn("flex flex-col rounded-lg overflow-hidden bg-[#0a0b0d] border border-gray-800", className)}>
-      {/* Terminal Header */}
       <div className="flex items-center gap-2 px-3 py-2 bg-[#1a1d21] border-b border-gray-800">
         <div className="flex gap-1.5">
           <div className="w-3 h-3 rounded-full bg-red-500" />
@@ -238,7 +229,6 @@ export function TerminalOutputViewer({
         <span className="text-xs text-gray-500 font-mono ml-2">opencode</span>
         
         <div className="flex items-center gap-2 ml-auto">
-          {/* Connection indicator */}
           {showConnectionStatus && (
             <div className="flex items-center gap-1.5">
               <div className={cn(
@@ -251,7 +241,6 @@ export function TerminalOutputViewer({
             </div>
           )}
           
-          {/* Status badge */}
           <div className="flex items-center gap-1.5">
             <div className={cn("w-2 h-2 rounded-full", statusBgColors[status])} />
             <span className={cn("text-xs font-mono", statusColors[status])}>
@@ -263,7 +252,6 @@ export function TerminalOutputViewer({
         </div>
       </div>
 
-      {/* Terminal Output */}
       <pre
         ref={terminalRef}
         className="flex-1 overflow-auto p-4 text-sm font-mono text-gray-300 leading-relaxed min-h-[300px] max-h-[500px] whitespace-pre-wrap break-all"

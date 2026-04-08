@@ -13,10 +13,19 @@ export interface StreamEvent {
 
 type EventCallback = (event: StreamEvent) => void
 
-const subscribers = new Map<number, Set<EventCallback>>()
+// Use globalThis to ensure Maps are shared across all module instances
+// (prevents issues with Next.js hot-reload and ESM module duplication)
+declare global {
+  // eslint-disable-next-line no-var
+  var __sseSubscribers: Map<number, Set<EventCallback>> | undefined
+  // eslint-disable-next-line no-var
+  var __sseOutputBuffers: Map<number, string[]> | undefined
+}
 
-// Simple buffer for output when no subscribers exist yet
-const outputBuffers = new Map<number, string[]>()
+const subscribers: Map<number, Set<EventCallback>> = 
+  globalThis.__sseSubscribers || (globalThis.__sseSubscribers = new Map())
+const outputBuffers: Map<number, string[]> = 
+  globalThis.__sseOutputBuffers || (globalThis.__sseOutputBuffers = new Map())
 
 export function subscribeToExecution(
   executionId: number,
@@ -46,8 +55,9 @@ export function subscribeToExecution(
         timestamp: new Date().toISOString(),
       },
     })
-    // Don't clear buffer - other new subscribers might need it too
-    // Only clear when execution completes
+    // Clear buffer after flushing to prevent duplicate sends
+    outputBuffers.delete(executionId)
+    console.log(`[SSE] Buffer cleared for execution ${executionId}`)
   }
 
   // Send current status
@@ -68,7 +78,6 @@ export function subscribeToExecution(
     executionSubscribers.delete(callback)
     if (executionSubscribers.size === 0) {
       subscribers.delete(executionId)
-      // Keep buffer in case someone reconnects
     }
   }
 }
@@ -98,25 +107,27 @@ export function publishToExecution(
 export function publishOutput(executionId: number, output: string): void {
   console.log(`[SSE] publishOutput called: executionId=${executionId}, length=${output.length}`)
   
-  // Always buffer the output
-  if (!outputBuffers.has(executionId)) {
-    outputBuffers.set(executionId, [])
-  }
-  outputBuffers.get(executionId)!.push(output)
-  
-  // Publish immediately if we have subscribers
   const subscriberCount = getSubscriberCount(executionId)
-  if (subscriberCount > 0) {
-    publishToExecution(executionId, {
-      type: "output",
-      payload: {
-        output,
-        timestamp: new Date().toISOString(),
-      },
-    })
-  } else {
+  
+  // Only buffer if no subscribers - otherwise send directly
+  if (subscriberCount === 0) {
     console.log(`[SSE] Buffering output (no subscribers yet)`)
+    if (!outputBuffers.has(executionId)) {
+      outputBuffers.set(executionId, [])
+    }
+    outputBuffers.get(executionId)!.push(output)
+    return
   }
+  
+  // We have subscribers, publish immediately
+  console.log(`[SSE] Publishing to ${subscriberCount} subscribers immediately`)
+  publishToExecution(executionId, {
+    type: "output",
+    payload: {
+      output,
+      timestamp: new Date().toISOString(),
+    },
+  })
 }
 
 export function publishStatus(executionId: number, status: string): void {
