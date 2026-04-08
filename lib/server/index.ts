@@ -1,3 +1,5 @@
 export * from "./encryption"
 export * from "./docker-manager"
 export * from "./cli-executor"
+export * from "./opencode-installer"
+export * from "./workspace"

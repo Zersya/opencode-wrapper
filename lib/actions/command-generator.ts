@@ -1,9 +1,9 @@
 "use server"
 
 import { auth } from "@clerk/nextjs/server"
-import { eq } from "drizzle-orm"
+import { eq, and } from "drizzle-orm"
 import { db } from "@/lib/db"
-import { tasks, projects, organizations } from "@/lib/db/schema"
+import { tasks, projects, organizations, customProviders } from "@/lib/db/schema"
 import { decryptApiKey } from "@/lib/server/encryption"
 
 interface GenerateCommandResult {
@@ -43,9 +43,25 @@ export async function generateOpencodeCommand(taskId: number): Promise<GenerateC
   const hasOpenAI = org?.openaiApiKey
   const hasAnthropic = org?.anthropicApiKey
 
+  // Check for custom providers if no native keys
+  let customProvider = null
   if (!hasOpenAI && !hasAnthropic) {
+    const [activeProvider] = await db
+      .select()
+      .from(customProviders)
+      .where(
+        and(
+          eq(customProviders.organizationId, project.organizationId),
+          eq(customProviders.isActive, true)
+        )
+      )
+      .limit(1)
+    customProvider = activeProvider
+  }
+
+  if (!hasOpenAI && !hasAnthropic && !customProvider) {
     throw new Error(
-      "No AI API key configured. Please add an OpenAI or Anthropic API key in organization settings to enable automatic command generation."
+      "No AI API key configured. Please add an OpenAI, Anthropic, or custom provider API key in organization settings to enable automatic command generation."
     )
   }
 
@@ -100,13 +116,25 @@ Based on this task, what opencode command would be most appropriate?`
         systemPrompt,
         userPrompt
       )
-    } else {
+    } else if (hasOpenAI) {
       // Use OpenAI
       response = await callOpenAI(
         decryptApiKey(org.openaiApiKey!),
         systemPrompt,
         userPrompt
       )
+    } else if (customProvider) {
+      // Use custom provider
+      response = await callCustomProvider(
+        decryptApiKey(customProvider.apiKey),
+        customProvider.baseUrl,
+        customProvider.apiFormat,
+        customProvider.models[0] || "gpt-4o-mini",
+        systemPrompt,
+        userPrompt
+      )
+    } else {
+      throw new Error("No AI provider available")
     }
 
     // Parse the response
@@ -181,6 +209,68 @@ async function callAnthropic(apiKey: string, systemPrompt: string, userPrompt: s
   return data.content[0]?.text || ""
 }
 
+async function callCustomProvider(
+  apiKey: string,
+  baseUrl: string,
+  apiFormat: "openai" | "anthropic",
+  model: string,
+  systemPrompt: string,
+  userPrompt: string
+): Promise<string> {
+  if (apiFormat === "openai") {
+    // OpenAI-compatible format
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 300,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Custom provider API error: ${error}`)
+    }
+
+    const data = await response.json()
+    return data.choices[0]?.message?.content || ""
+  } else {
+    // Anthropic-compatible format
+    const response = await fetch(`${baseUrl}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 300,
+        temperature: 0.3,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Custom provider API error: ${error}`)
+    }
+
+    const data = await response.json()
+    return data.content[0]?.text || ""
+  }
+}
+
 function parseAIResponse(response: string): GenerateCommandResult {
   // Try to extract JSON from the response
   try {
@@ -194,8 +284,21 @@ function parseAIResponse(response: string): GenerateCommandResult {
     return JSON.parse(response)
   } catch {
     // Fallback: try to extract command from text
-    const commandMatch = response.match(/(?:command[:\s]*)?([\/][a-z-]+[^\n]*)/i)
-    const command = commandMatch ? commandMatch[1].trim() : "/review"
+    // Look for patterns like: /command, /command description, command: /command, etc.
+    // Only capture the command word and a short description (stop at period, newline, or "the most")
+    const commandMatch = response.match(/(?:command[:\s]*)?([\/][a-z-]+(?:\s+[a-z0-9\-_]+){0,5})/i)
+    let command = commandMatch ? commandMatch[1].trim() : "/review"
+    
+    // Clean up the command - remove trailing punctuation and explanations
+    command = command
+      .replace(/\.$/, '')  // Remove trailing period
+      .replace(/\s+(?:the|since|because|as|for)\s+.+$/i, '')  // Remove explanation clauses
+      .trim()
+    
+    // Ensure command starts with /
+    if (!command.startsWith('/')) {
+      command = '/' + command
+    }
     
     return {
       command,
@@ -216,6 +319,7 @@ export async function previewOpencodeCommand(
 
   // Check for AI API keys if org is provided
   let hasAI = false
+  let customProvider: typeof customProviders.$inferSelect | null = null
   if (organizationId) {
     const [org] = await db
       .select()
@@ -223,6 +327,22 @@ export async function previewOpencodeCommand(
       .where(eq(organizations.id, organizationId))
       .limit(1)
     hasAI = !!(org?.openaiApiKey || org?.anthropicApiKey)
+    
+    // Check for custom providers if no native keys
+    if (!hasAI) {
+      const [provider] = await db
+        .select()
+        .from(customProviders)
+        .where(
+          and(
+            eq(customProviders.organizationId, organizationId),
+            eq(customProviders.isActive, true)
+          )
+        )
+        .limit(1)
+      customProvider = provider
+      hasAI = !!provider
+    }
   }
 
   if (!hasAI) {
@@ -271,6 +391,15 @@ Suggest an opencode command:`
     } else if (org.openaiApiKey) {
       response = await callOpenAI(
         decryptApiKey(org.openaiApiKey),
+        systemPrompt,
+        userPrompt
+      )
+    } else if (customProvider) {
+      response = await callCustomProvider(
+        decryptApiKey(customProvider.apiKey),
+        customProvider.baseUrl,
+        customProvider.apiFormat,
+        customProvider.models[0] || "gpt-4o-mini",
         systemPrompt,
         userPrompt
       )

@@ -15,50 +15,44 @@ type EventCallback = (event: StreamEvent) => void
 
 const subscribers = new Map<number, Set<EventCallback>>()
 
-// Rate limiting configuration
-const MAX_SUBSCRIBERS_PER_EXECUTION = 10
-const OUTPUT_THROTTLE_MS = 100 // Minimum time between output publishes
-
-// Track last publish time for each execution (for throttling)
-const lastPublishTime = new Map<number, number>()
-const pendingOutput = new Map<number, string>()
+// Simple buffer for output when no subscribers exist yet
+const outputBuffers = new Map<number, string[]>()
 
 export function subscribeToExecution(
   executionId: number,
   callback: EventCallback
 ): () => void {
+  console.log(`[SSE] New subscriber for execution ${executionId}`)
+  
   // Create subscriber set if not exists
   if (!subscribers.has(executionId)) {
     subscribers.set(executionId, new Set())
   }
 
   const executionSubscribers = subscribers.get(executionId)!
+  executionSubscribers.add(callback)
+  console.log(`[SSE] Subscriber added, total: ${executionSubscribers.size}`)
 
-  // Enforce subscriber limit
-  if (executionSubscribers.size >= MAX_SUBSCRIBERS_PER_EXECUTION) {
-    console.warn(`Max subscribers (${MAX_SUBSCRIBERS_PER_EXECUTION}) reached for execution ${executionId}`)
-    // Return no-op unsubscribe
-    return () => {}
+  // IMMEDIATELY flush any buffered output to this new subscriber
+  const buffered = outputBuffers.get(executionId)
+  if (buffered && buffered.length > 0) {
+    const output = buffered.join("")
+    console.log(`[SSE] Flushing ${output.length} chars of buffered output to new subscriber`)
+    callback({
+      type: "output",
+      payload: {
+        output,
+        status: "running",
+        timestamp: new Date().toISOString(),
+      },
+    })
+    // Don't clear buffer - other new subscribers might need it too
+    // Only clear when execution completes
   }
 
-  executionSubscribers.add(callback)
-
-  // Get current execution state for initial data
+  // Send current status
   const running = runningExecutions.get(executionId)
   if (running) {
-    // Send any accumulated output immediately
-    if (running.output.length > 0) {
-      callback({
-        type: "output",
-        payload: {
-          output: running.output.join(""),
-          status: running.status,
-          timestamp: new Date().toISOString(),
-        },
-      })
-    }
-
-    // Send current status
     callback({
       type: "status",
       payload: {
@@ -70,11 +64,11 @@ export function subscribeToExecution(
 
   // Return unsubscribe function
   return () => {
+    console.log(`[SSE] Unsubscribing from execution ${executionId}`)
     executionSubscribers.delete(callback)
     if (executionSubscribers.size === 0) {
       subscribers.delete(executionId)
-      lastPublishTime.delete(executionId)
-      pendingOutput.delete(executionId)
+      // Keep buffer in case someone reconnects
     }
   }
 }
@@ -84,57 +78,44 @@ export function publishToExecution(
   event: StreamEvent
 ): void {
   const executionSubscribers = subscribers.get(executionId)
-  if (!executionSubscribers) return
+  
+  if (!executionSubscribers || executionSubscribers.size === 0) {
+    console.log(`[SSE] No subscribers for execution ${executionId}, buffering output`)
+    return
+  }
 
+  console.log(`[SSE] Publishing ${event.type} to ${executionSubscribers.size} subscribers`)
+  
   executionSubscribers.forEach((callback) => {
     try {
       callback(event)
     } catch (error) {
-      console.error(`Error publishing to subscriber for execution ${executionId}:`, error)
+      console.error(`[SSE] Error publishing to subscriber:`, error)
     }
   })
 }
 
 export function publishOutput(executionId: number, output: string): void {
-  const now = Date.now()
-  const lastPublish = lastPublishTime.get(executionId) || 0
-  const timeSinceLastPublish = now - lastPublish
-
-  // Accumulate pending output
-  const currentPending = pendingOutput.get(executionId) || ""
-  pendingOutput.set(executionId, currentPending + output)
-
-  // Throttle publishing to prevent overwhelming clients
-  if (timeSinceLastPublish < OUTPUT_THROTTLE_MS) {
-    // Schedule publish after throttle delay
-    setTimeout(() => {
-      const pending = pendingOutput.get(executionId)
-      if (pending) {
-        pendingOutput.delete(executionId)
-        lastPublishTime.set(executionId, Date.now())
-        publishToExecution(executionId, {
-          type: "output",
-          payload: {
-            output: pending,
-            timestamp: new Date().toISOString(),
-          },
-        })
-      }
-    }, OUTPUT_THROTTLE_MS - timeSinceLastPublish)
+  console.log(`[SSE] publishOutput called: executionId=${executionId}, length=${output.length}`)
+  
+  // Always buffer the output
+  if (!outputBuffers.has(executionId)) {
+    outputBuffers.set(executionId, [])
+  }
+  outputBuffers.get(executionId)!.push(output)
+  
+  // Publish immediately if we have subscribers
+  const subscriberCount = getSubscriberCount(executionId)
+  if (subscriberCount > 0) {
+    publishToExecution(executionId, {
+      type: "output",
+      payload: {
+        output,
+        timestamp: new Date().toISOString(),
+      },
+    })
   } else {
-    // Publish immediately
-    const pending = pendingOutput.get(executionId)
-    if (pending) {
-      pendingOutput.delete(executionId)
-      lastPublishTime.set(executionId, now)
-      publishToExecution(executionId, {
-        type: "output",
-        payload: {
-          output: pending,
-          timestamp: new Date().toISOString(),
-        },
-      })
-    }
+    console.log(`[SSE] Buffering output (no subscribers yet)`)
   }
 }
 
@@ -153,17 +134,18 @@ export function publishComplete(
   status: string,
   exitCode?: number
 ): void {
-  // Flush any pending output first
-  const pending = pendingOutput.get(executionId)
-  if (pending) {
-    pendingOutput.delete(executionId)
+  // Flush any remaining buffered output
+  const buffered = outputBuffers.get(executionId)
+  if (buffered && buffered.length > 0) {
+    const output = buffered.join("")
     publishToExecution(executionId, {
       type: "output",
       payload: {
-        output: pending,
+        output,
         timestamp: new Date().toISOString(),
       },
     })
+    outputBuffers.delete(executionId)
   }
 
   publishToExecution(executionId, {
@@ -175,26 +157,26 @@ export function publishComplete(
     },
   })
 
-  // Clean up subscribers after a short delay
+  // Clean up after delay
   setTimeout(() => {
     subscribers.delete(executionId)
-    lastPublishTime.delete(executionId)
-    pendingOutput.delete(executionId)
-  }, 5000)
+    outputBuffers.delete(executionId)
+  }, 10000)
 }
 
 export function publishError(executionId: number, error: string): void {
-  // Flush any pending output first
-  const pending = pendingOutput.get(executionId)
-  if (pending) {
-    pendingOutput.delete(executionId)
+  // Flush any remaining buffered output first
+  const buffered = outputBuffers.get(executionId)
+  if (buffered && buffered.length > 0) {
+    const output = buffered.join("")
     publishToExecution(executionId, {
       type: "output",
       payload: {
-        output: pending,
+        output,
         timestamp: new Date().toISOString(),
       },
     })
+    outputBuffers.delete(executionId)
   }
 
   publishToExecution(executionId, {
@@ -205,12 +187,11 @@ export function publishError(executionId: number, error: string): void {
     },
   })
 
-  // Clean up subscribers after a short delay
+  // Clean up after delay
   setTimeout(() => {
     subscribers.delete(executionId)
-    lastPublishTime.delete(executionId)
-    pendingOutput.delete(executionId)
-  }, 5000)
+    outputBuffers.delete(executionId)
+  }, 10000)
 }
 
 export function getSubscriberCount(executionId: number): number {

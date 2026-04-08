@@ -165,6 +165,30 @@ export async function updateTask(
   }
 
   const updatePayload: Record<string, any> = { ...updateData }
+  
+  // Clean up opencodeCommand if provided - extract just the /command part
+  if (updateData.opencodeCommand !== undefined && updateData.opencodeCommand) {
+    let command = updateData.opencodeCommand.trim()
+    
+    // Extract just the /command part from potentially messy AI output
+    // Match: /word (command) followed by optional space and text (description)
+    // Stop at newline, period, or explanation words
+    const commandMatch = command.match(/^(\/\w+(?:\s+[^.\n]+?)?)(?:\s*(?:\.|\n|since|because|the most|analysis|suggests))/i)
+    if (commandMatch) {
+      command = commandMatch[1].trim()
+    } else {
+      // Fallback: just take first line
+      command = command.split('\n')[0].trim()
+      // And limit to first 100 chars to avoid explanation text
+      if (command.length > 100) {
+        command = command.substring(0, 100)
+      }
+    }
+    
+    updatePayload.opencodeCommand = command
+    console.log(`[updateTask] Cleaned opencodeCommand: "${command}"`)
+  }
+  
   if (updateData.dueDate !== undefined) {
     updatePayload.dueDate = updateData.dueDate ? new Date(updateData.dueDate) : null
   }

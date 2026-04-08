@@ -1,15 +1,33 @@
-import { spawn, type ChildProcess } from "child_process"
+import { spawn, exec, type ChildProcess } from "child_process"
+import { promisify } from "util"
 import { db } from "@/lib/db"
-import { taskExecutions, type TaskExecution } from "@/lib/db/schema"
+import { taskExecutions, projects, type TaskExecution } from "@/lib/db/schema"
 import { eq } from "drizzle-orm"
 import { execInContainer } from "./docker-manager"
 import { cloneRepository } from "./git-clone"
+import { ensureOpenCodeInstalled } from "./opencode-installer"
+import { 
+  getOrganizationWorkspacePath, 
+  ensureWorkspaceExists 
+} from "./workspace"
 import {
   publishOutput,
   publishStatus,
   publishComplete,
   publishError,
 } from "./execution-stream"
+
+const execAsync = promisify(exec)
+
+// Escape special shell characters in an argument
+function escapeShellArg(arg: string): string {
+  // If the argument contains special characters, wrap it in single quotes
+  // and handle any existing single quotes by ending the quote, adding an escaped quote, and restarting
+  if (/[^a-zA-Z0-9_\-\/\.]/.test(arg)) {
+    return "'" + arg.replace(/'/g, "'\"'\"'") + "'"
+  }
+  return arg
+}
 
 function parseCommand(command: string): string[] {
   const args: string[] = []
@@ -127,36 +145,98 @@ async function runExecution(
     // Publish status change to running
     publishStatus(executionId, "running")
 
-    appendOutput("[opencode-wrapper] Cloning repository...\n")
-    const cloneResult = await cloneRepository({
-      projectId: options.projectId,
-      workingDirectory: options.workingDirectory,
-      branch: options.branch,
-      useDocker,
-      containerId: useDocker ? `opencode-org-${options.organizationId}` : undefined,
-    })
+    // Check if project has a git repo configured
+    const { gitRepoUrl } = await db
+      .select({ gitRepoUrl: projects.gitRepoUrl })
+      .from(projects)
+      .where(eq(projects.id, options.projectId))
+      .limit(1)
+      .then(rows => rows[0] || { gitRepoUrl: null })
 
-    if (!cloneResult.success && !cloneResult.error?.includes("already exists")) {
-      appendOutput(`[opencode-wrapper] Clone failed: ${cloneResult.error}\n`)
-      await db
-        .update(taskExecutions)
-        .set({
-          status: "failed",
-          output: outputChunks.join(""),
-          completedAt: new Date(),
-        })
-        .where(eq(taskExecutions.id, executionId))
-      running.status = "failed"
-      // Publish error event
-      publishError(executionId, cloneResult.error || "Repository cloning failed")
-      return
+    // Ensure workspace directory exists
+    const workspacePath = ensureWorkspaceExists(options.orgSlug)
+    appendOutput(`[opencode-wrapper] Workspace ready at: ${workspacePath}\n`)
+    
+    let cloneResult: { success: boolean; path: string; error?: string }
+    
+    if (gitRepoUrl) {
+      appendOutput("[opencode-wrapper] Cloning repository...\n")
+      cloneResult = await cloneRepository({
+        projectId: options.projectId,
+        workingDirectory: workspacePath,
+        branch: options.branch,
+        useDocker,
+        containerId: useDocker ? `opencode-org-${options.organizationId}` : undefined,
+      })
+
+      if (!cloneResult.success && !cloneResult.error?.includes("already exists")) {
+        appendOutput(`[opencode-wrapper] Clone failed: ${cloneResult.error}\n`)
+        await db
+          .update(taskExecutions)
+          .set({
+            status: "failed",
+            output: outputChunks.join(""),
+            completedAt: new Date(),
+          })
+          .where(eq(taskExecutions.id, executionId))
+        running.status = "failed"
+        // Publish error event
+        publishError(executionId, cloneResult.error || "Repository cloning failed")
+        return
+      }
+
+      appendOutput(`[opencode-wrapper] Repository ready at: ${cloneResult.path}\n`)
+    } else {
+      // No git repo configured, use workspace directory directly
+      cloneResult = { success: true, path: workspacePath }
+      appendOutput(`[opencode-wrapper] Using workspace directory: ${workspacePath}\n`)
     }
 
-    appendOutput(`[opencode-wrapper] Repository ready at: ${cloneResult.path}\n`)
     appendOutput(`[opencode-wrapper] Starting opencode execution...\n\n`)
 
     const workingDir = cloneResult.path || options.workingDirectory
-    const commandArgs = parseCommand(options.command)
+    
+    // Validate and clean the command before execution
+    let command = options.command.trim()
+    
+    console.log(`[cli-executor] Raw command from DB: "${command}"`)
+    
+    // Extract just the command part - opencode commands are: /command [description]
+    // Remove any explanation text that the AI might have included
+    // Look for patterns like: "/command ..." or "command: /command ..." or just "/command"
+    const commandMatch = command.match(/(?:command[:\s]*)?(\/\w+(?:\s+[^.\n]+)?)/i)
+    if (commandMatch) {
+      command = commandMatch[1].trim()
+      console.log(`[cli-executor] Extracted command: "${command}"`)
+    } else if (command.length > 100 || command.includes('Since') || command.includes('because')) {
+      console.warn(`[cli-executor] Command appears to contain explanation text, attempting cleanup...`)
+      
+      // Take just the first line and look for /something
+      const firstLine = command.split('\n')[0].trim()
+      const slashMatch = firstLine.match(/(\/\w+)/)
+      if (slashMatch) {
+        command = slashMatch[1]
+        console.log(`[cli-executor] Extracted command from first line: "${command}"`)
+      }
+    }
+    
+    // Ensure command starts with /
+    if (!command.startsWith('/')) {
+      command = '/' + command
+    }
+    
+    // Parse the command into parts: command and arguments
+    const firstSpaceIndex = command.indexOf(' ')
+    if (firstSpaceIndex > 0) {
+      // Has arguments: "/command arg1 arg2"
+      const cmd = command.substring(0, firstSpaceIndex)
+      const args = command.substring(firstSpaceIndex + 1).trim()
+      command = cmd + ' ' + args
+    }
+    
+    console.log(`[cli-executor] Final command to execute: "${command}"`)
+    
+    const commandArgs = parseCommand(command)
 
     if (useDocker) {
       const envVars: Record<string, string> = {
@@ -171,6 +251,19 @@ async function runExecution(
       }
 
       const containerName = `opencode-org-${options.organizationId}`
+      
+      // Ensure directory exists in container
+      if (!gitRepoUrl) {
+        const mkdirResult = await execInContainer(
+          containerName,
+          ["mkdir", "-p", workingDir],
+          { cwd: workingDir }
+        )
+        if (mkdirResult.exitCode !== 0) {
+          appendOutput(`[opencode-wrapper] Failed to create directory: ${mkdirResult.stderr}\n`)
+        }
+      }
+      
       const result = await execInContainer(
         containerName,
         ["opencode", ...commandArgs],
@@ -198,27 +291,79 @@ async function runExecution(
         result.exitCode ?? undefined
       )
     } else {
+      // Check and ensure opencode is installed before spawning
+      const installCheck = await ensureOpenCodeInstalled()
+      
+      if (!installCheck.installed) {
+        appendOutput(`[opencode-wrapper] Failed to install OpenCode CLI: ${installCheck.error}\n`)
+        await db
+          .update(taskExecutions)
+          .set({
+            status: "failed",
+            output: outputChunks.join(""),
+            completedAt: new Date(),
+          })
+          .where(eq(taskExecutions.id, executionId))
+        running.status = "failed"
+        publishError(executionId, `OpenCode CLI installation failed: ${installCheck.error}`)
+        return
+      }
+      
+      appendOutput(`[opencode-wrapper] OpenCode CLI ready: ${installCheck.version} at ${installCheck.path}\n`)
+      
       const env = {
         ...process.env,
         ...options.env,
       }
 
-      const child = spawn("opencode", commandArgs, {
+      // Use the full path to opencode to avoid PATH issues
+      const opencodePath = installCheck.path || "opencode"
+      
+      // Build the command for opencode CLI
+      // opencode run "command" - runs opencode with the given command/message
+      const commandString = commandArgs.join(' ')
+      
+      // Escape the command for shell execution
+      const escapedCommand = commandString.includes('"') 
+        ? commandString.replace(/"/g, '\\"') 
+        : commandString
+      
+      // Construct full command: opencode run "/command description"
+      const fullCommand = `${opencodePath} run "${escapedCommand}"`
+      
+      // Debug logging
+      console.log(`[cli-executor] Command string: "${commandString}"`)
+      console.log(`[cli-executor] Full command: ${fullCommand}`)
+      console.log(`[cli-executor] Working directory:`, workingDir)
+      
+      // Spawn with shell:true to properly handle the command string
+      const child = spawn(fullCommand, {
         cwd: workingDir,
         env,
         shell: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
       })
 
       running.process = child
 
+      // Handle stdout data
       child.stdout?.on("data", (data) => {
         const str = data.toString()
+        console.log(`[cli-executor] stdout: ${str.substring(0, 100)}...`)
         appendOutput(str)
       })
 
+      // Handle stderr data
       child.stderr?.on("data", (data) => {
         const str = data.toString()
+        console.log(`[cli-executor] stderr: ${str.substring(0, 100)}...`)
         appendOutput(str)
+      })
+      
+      // Handle process errors (spawn failures, etc)
+      child.on("error", (error) => {
+        console.error(`[cli-executor] Process error:`, error)
+        appendOutput(`[opencode-wrapper] Process error: ${error.message}\n`)
       })
 
       await new Promise<void>((resolve) => {
@@ -242,7 +387,20 @@ async function runExecution(
         })
 
         child.on("error", async (error) => {
-          appendOutput(`Error: ${error.message}`)
+          let errorMessage = error.message
+          
+          // Provide more helpful error messages
+          if (error.message.includes("ENOENT")) {
+            // Check if it's the directory or the command that's missing
+            try {
+              await execAsync(`test -d "${workingDir}"`)
+              errorMessage = "OpenCode CLI not found in PATH after installation attempt. Try restarting the server or install manually: npm install -g @anthropic/opencode"
+            } catch {
+              errorMessage = `Working directory does not exist: ${workingDir}`
+            }
+          }
+          
+          appendOutput(`Error: ${errorMessage}`)
 
           await db
             .update(taskExecutions)
@@ -255,7 +413,7 @@ async function runExecution(
 
           running.status = "failed"
           // Publish error event
-          publishError(executionId, error.message)
+          publishError(executionId, errorMessage)
           resolve()
         })
       })

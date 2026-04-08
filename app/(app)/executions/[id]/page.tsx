@@ -126,6 +126,7 @@ export default function ExecutionPage() {
             </CardHeader>
             <CardContent>
               <TerminalOutputViewer
+                key={`terminal-${executionId}`}
                 executionId={executionId}
                 initialOutput={execution.output || ""}
                 initialStatus={status}

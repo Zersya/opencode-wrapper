@@ -105,8 +105,10 @@ export async function cloneRepository(
     return { success: false, path: "", error: "Project not found" }
   }
 
+  // If no Git repo URL configured, return success with working directory as the path
+  // This allows execution without a Git repository
   if (!project.gitRepoUrl) {
-    return { success: false, path: "", error: "No Git repository URL configured" }
+    return { success: true, path: options.workingDirectory }
   }
 
   const [org] = await db

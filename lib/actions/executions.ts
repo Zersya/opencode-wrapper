@@ -15,6 +15,7 @@ import {
   type ExecutionOptions,
 } from "@/lib/server/cli-executor"
 import { getCustomProviderEnvVars } from "./custom-providers"
+import { getOrganizationWorkspacePath } from "@/lib/server/workspace"
 
 export async function executeTask(taskId: number): Promise<TaskExecution> {
   const { userId } = await auth()
@@ -68,7 +69,7 @@ export async function executeTask(taskId: number): Promise<TaskExecution> {
     organizationId: org.id,
     orgSlug: org.slug,
     command: task.opencodeCommand,
-    workingDirectory: `/workspace/${org.slug}`,
+    workingDirectory: getOrganizationWorkspacePath(org.slug),
     env,
     branch: project.gitBranch || undefined,
   })

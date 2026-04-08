@@ -3,6 +3,7 @@ import { NextRequest } from "next/server"
 import { subscribeToExecution, type StreamEvent } from "@/lib/server/execution-stream"
 
 export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
 
 export async function GET(
   request: NextRequest,
@@ -24,6 +25,8 @@ export async function GET(
 
   const stream = new ReadableStream({
     start(controller) {
+      console.log(`[SSE] Client connected to execution ${executionIdNum}`)
+      
       // Send initial connection message
       controller.enqueue(
         encoder.encode(`event: connected\ndata: ${JSON.stringify({ executionId: executionIdNum })}\n\n`)
@@ -36,32 +39,50 @@ export async function GET(
           try {
             const message = `event: ${data.type}\ndata: ${JSON.stringify(data.payload)}\n\n`
             controller.enqueue(encoder.encode(message))
+            console.log(`[SSE] Published ${data.type} event for execution ${executionIdNum}`)
 
             // Close stream if execution is complete
             if (data.type === "complete" || data.type === "error") {
+              console.log(`[SSE] Closing stream for completed execution ${executionIdNum}`)
               controller.close()
               unsubscribe()
             }
           } catch (error) {
             // Client disconnected
+            console.log(`[SSE] Client disconnected from execution ${executionIdNum}`)
             unsubscribe()
           }
         }
       )
 
+      // Send heartbeat every 30 seconds to keep connection alive
+      const heartbeatInterval = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(`event: heartbeat\ndata: {}\n\n`))
+        } catch {
+          // Connection closed
+          clearInterval(heartbeatInterval)
+        }
+      }, 30000)
+
       // Handle client disconnect
       request.signal.addEventListener("abort", () => {
+        console.log(`[SSE] Client aborted connection for execution ${executionIdNum}`)
+        clearInterval(heartbeatInterval)
         unsubscribe()
         controller.close()
       })
     },
   })
 
+  console.log(`[SSE] Returning stream response for execution ${executionIdNum}`)
+  
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no", // Disable Nginx buffering if present
     },
   })
 }
