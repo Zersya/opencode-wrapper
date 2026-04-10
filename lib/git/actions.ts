@@ -28,6 +28,7 @@ export interface Repository {
   owner: string
   defaultBranch: string
   updatedAt: Date
+  stars?: number
 }
 
 export interface Branch {

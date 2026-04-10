@@ -34,6 +34,23 @@ function getNextPort(basePort: number): number {
 }
 
 async function isPortInUse(port: number, hostname: string): Promise<boolean> {
+  // First check: TCP port binding (catches zombie processes)
+  try {
+    const { exec } = await import("child_process")
+    const { promisify } = await import("util")
+    const execAsync = promisify(exec)
+    
+    // Check if anything is listening on the port
+    const { stdout } = await execAsync(`lsof -i :${port} -P -n 2>/dev/null || netstat -an 2>/dev/null | grep ":${port} " || ss -tln 2>/dev/null | grep ":${port} " || echo ""`)
+    if (stdout.trim()) {
+      console.log(`[opencode-server] Port ${port} is bound by another process`)
+      return true
+    }
+  } catch {
+    // Ignore errors from port check commands
+  }
+  
+  // Second check: HTTP health endpoint (catches working servers)
   try {
     const response = await fetch(`http://${hostname}:${port}/global/health`, {
       method: "GET",

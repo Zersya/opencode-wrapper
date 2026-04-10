@@ -1,4 +1,6 @@
 export { RepositoryBrowser } from "./repository-browser"
+export { FileTree, type FileNode } from "./file-tree"
 export { BranchSelector } from "./branch-selector"
 export { PullRequestList } from "./pull-request-list"
 export { CreatePullRequestDialog } from "./create-pr-dialog"
+export { CodePreview } from "./code-preview"

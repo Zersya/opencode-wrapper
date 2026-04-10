@@ -38,3 +38,5 @@ next-env.d.ts
 # workspace directories (local development)
 /.workspace
 /workspace
+
+.env

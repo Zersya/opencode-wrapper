@@ -148,15 +148,65 @@ export class OpenCodeAPIClient {
 
     console.log(`[opencode-api] Sending message to session ${sessionId}: "${message.substring(0, 100)}..."`)
 
-    // No retry for sendMessage - if session is gone, it's gone
-    const response = await fetch(`${baseUrl}/session/${sessionId}/message`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60000), // 60 second timeout for message sending
-    })
+    // Try sending with retry logic for transient failures
+    let lastError: Error | undefined
+    const maxRetries = 2
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        console.log(`[opencode-api] Retry attempt ${attempt}/${maxRetries} for sending message...`)
+        await new Promise(r => setTimeout(r, 1000 * attempt)) // Exponential backoff
+      }
+      
+      try {
+        const response = await fetch(`${baseUrl}/session/${sessionId}/message`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(120000), // 120 second timeout for message sending
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          
+          // Special handling for session not found - don't retry, fail immediately
+          if (response.status === 404 || errorText.includes("Session not found") || errorText.includes("NotFoundError")) {
+            console.error(`[opencode-api] Session ${sessionId} not found - server may have crashed and lost session data`)
+            throw new Error(`Session not found: ${sessionId}. The OpenCode server may have crashed and lost session data. Please retry the execution.`)
+          }
+          
+          // For 5xx errors, retry
+          if (response.status >= 500 && attempt < maxRetries) {
+            console.log(`[opencode-api] Server error ${response.status}, will retry...`)
+            lastError = new Error(`Server error: ${response.status} - ${errorText}`)
+            continue
+          }
+          
+          throw new Error(`Failed to send message: ${response.statusText} - ${errorText}`)
+        }
+
+        const msg = await response.json()
+        console.log(`[opencode-api] Message sent successfully: ${msg.id}`)
+        return msg
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error))
+        
+        // Don't retry on session not found or abort errors
+        if (lastError.message.includes("Session not found") || lastError.message.includes("abort")) {
+          throw lastError
+        }
+        
+        if (attempt === maxRetries) {
+          throw lastError
+        }
+        
+        console.log(`[opencode-api] Send failed on attempt ${attempt + 1}, will retry: ${lastError.message}`)
+      }
+    }
+    
+    throw lastError || new Error("Failed to send message after retries")
 
     if (!response.ok) {
       const errorText = await response.text()
