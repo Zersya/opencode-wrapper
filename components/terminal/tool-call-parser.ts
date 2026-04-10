@@ -6,6 +6,7 @@ export interface ToolCall {
   result?: string
   duration?: string
   startTime: number
+  endTime?: number
 }
 
 interface ParsedSegment {
@@ -14,72 +15,237 @@ interface ParsedSegment {
   toolCall?: ToolCall
 }
 
-// Tool call patterns - matches various CLI output formats
-const TOOL_CALL_PATTERNS = {
-  // Matches: ▶ tool_name or > tool_name or ● tool_name
-  invocation: /^(?:▶|>|●|▸|→)\s*(\w+(?:_\w+)*)(?:\s*[:\-]?\s*)?$/i,
-  
-  // Matches: ✓ tool_name completed or ✓ Completed or ✅ 
-  completion: /^(?:✓|✅|✔|☑)\s*(?:.*?\s)?(?:completed|done|success|finished)(?:\s*[:\-]?\s*)?$/i,
-  
-  // Matches: ✗ Failed or ✗ tool_name failed
-  failure: /^(?:✗|❌|✘|❎|⊗)\s*(?:.*?\s)?(?:failed|error|cancelled)(?:\s*[:\-]?\s*)?$/i,
-  
-  // Matches: key: value (arguments)
-  argument: /^(\w+):\s*(.+)$/,
-  
-  // Matches: path: /some/path
-  pathArgument: /^(path|file|dir|directory):\s*(.+)$/i,
-  
-  // Matches: --- or === (section separators)
-  separator: /^[\-=]{3,}$/,
-}
-
-// Tool name to icon mapping
+// Comprehensive tool name to icon mapping (30+ tools)
 export const TOOL_ICONS: Record<string, string> = {
+  // File operations
   read: "📄",
   read_file: "📄",
   edit: "✏️",
   edit_file: "✏️",
   write: "📝",
   write_file: "📝",
+  glob: "📁",
+  list: "📋",
+  ls: "📋",
+  
+  // Search operations
   grep: "🔍",
   search: "🔍",
   find: "🔍",
-  glob: "📁",
-  list: "📋",
+  
+  // System operations
   bash: "💻",
   shell: "💻",
   command: "⌨️",
-  task: "📌",
+  exec: "⚡",
+  
+  // Codebase operations
+  codebase_retrieval: "🔎",
+  augment_context_engine_codebase_retrieval: "🔎",
+  
+  // Documentation
+  context7_resolve_library_id: "📚",
+  context7_query_docs: "📖",
+  
+  // Web operations
   webfetch: "🌐",
+  fetch: "🌐",
+  curl: "🌐",
+  
+  // Task management
+  task: "📌",
   todowrite: "☑️",
+  
+  // Skills
   skill: "🎯",
+  
+  // Interactive
   ask: "❓",
   question: "❓",
+  
+  // AI/LLM
+  claude: "🤖",
+  openai: "🧠",
+  
+  // Database
+  db_query: "🗄️",
+  db_write: "💾",
+  
+  // Git
+  git: "🔀",
+  git_commit: "🔀",
+  git_push: "⬆️",
+  git_pull: "⬇️",
+  
+  // Testing
+  test: "🧪",
+  run_tests: "🧪",
+  
+  // Build/Deploy
+  build: "🔨",
+  deploy: "🚀",
+  
+  // Default
   default: "🔧",
 }
 
 export function getToolIcon(toolName: string): string {
-  return TOOL_ICONS[toolName] || TOOL_ICONS.default
+  // Try exact match first
+  if (TOOL_ICONS[toolName]) {
+    return TOOL_ICONS[toolName]
+  }
+  
+  // Try normalized name (remove underscores, lowercase)
+  const normalized = toolName.toLowerCase().replace(/_/g, '')
+  for (const [key, icon] of Object.entries(TOOL_ICONS)) {
+    if (key.toLowerCase().replace(/_/g, '') === normalized) {
+      return icon
+    }
+  }
+  
+  // Try partial match
+  for (const [key, icon] of Object.entries(TOOL_ICONS)) {
+    if (toolName.toLowerCase().includes(key.toLowerCase()) || 
+        key.toLowerCase().includes(toolName.toLowerCase())) {
+      return icon
+    }
+  }
+  
+  return TOOL_ICONS.default
 }
 
+// Enhanced patterns for better matching
+const TOOL_CALL_PATTERNS = {
+  // Tool invocation patterns (multiple formats)
+  invocation: [
+    // Standard: ▶ tool_name
+    /^(?:\s*)(?:▶|>|●|▸|→|⇢|➜|➤|➔|➙|➛|➝|➞|➟|➠|➡|➢|➣|➤|➥|➦|➧|➨|➩|➪|➫|➬|➭|➮|➯|➱|➲|➳|➴|➵|➶|➷|➸|➹|➺|➻|➼|➽|➾|➿)\s*(\w+(?:[_-]\w+)*)(?:\s*[\:\-\(\[])?/i,
+    // JSON format: {"tool": "name"}
+    /^\s*\{\s*"tool"\s*:\s*"(\w+(?:[_-]\w+)*)"\s*/i,
+    // Function call: tool_name(
+    /^(?:\s*)(\w+(?:[_-]\w+)*)\s*\(/i,
+    // Using: tool_name
+    /^(?:\s*)(?:using|running|calling|executing|invoking)\s*[:\-]?\s*(\w+(?:[_-]\w+)*)/i,
+  ],
+  
+  // Tool completion patterns
+  completion: [
+    /^(?:\s*)(?:✓|✅|✔|☑|✓|✔️|✅|🟢|✔︎)\s*(?:.*?\s)?(?:completed|done|success|finished|succeeded|ready|ok|✓|✅)/i,
+    /^(?:\s*)(?:result|output|returned|response)\s*[:\-=]?\s*/i,
+  ],
+  
+  // Tool failure patterns
+  failure: [
+    /^(?:\s*)(?:✗|❌|✘|❎|⊗|✖️|❌|🔴|✕|✖|×|X)\s*(?:.*?\s)?(?:failed|error|cancelled|canceled|timeout|exception|crash)/i,
+    /^(?:\s*)(?:error|exception|failed|timeout)\s*[:\-=]?\s*/i,
+  ],
+  
+  // Argument patterns
+  argument: [
+    // key: value
+    /^(?:\s*)(\w+)\s*[\:\=]\s*(.+)$/,
+    // "key": "value" (JSON style)
+    /^(?:\s*)"(\w+)"\s*:\s*"(.+?)"\s*,?$/,
+    // key=value
+    /^(?:\s*)(\w+)\s*\=\s*(.+)$/,
+  ],
+  
+  // Section separators
+  separator: [
+    /^[\-=]{3,}$/,
+    /^(?:\s*)[┌┬┐├┼┤└┴┘─│]+/,  // Box drawing characters
+  ],
+  
+  // Code block indicators
+  codeBlock: [
+    /^```\w*$/,  // Code fence
+    /^\s*\$\s+/,  // Shell prompt
+  ],
+}
+
+// Tool name normalization
+function normalizeToolName(name: string): string {
+  return name.toLowerCase().trim()
+}
+
+// Detect if a line is a tool invocation
+function isToolInvocation(line: string): { isMatch: boolean; toolName?: string } {
+  for (const pattern of TOOL_CALL_PATTERNS.invocation) {
+    const match = line.match(pattern)
+    if (match) {
+      return { isMatch: true, toolName: normalizeToolName(match[1]) }
+    }
+  }
+  return { isMatch: false }
+}
+
+// Detect if a line indicates tool completion
+function isToolCompletion(line: string): boolean {
+  return TOOL_CALL_PATTERNS.completion.some(pattern => pattern.test(line))
+}
+
+// Detect if a line indicates tool failure
+function isToolFailure(line: string): boolean {
+  return TOOL_CALL_PATTERNS.failure.some(pattern => pattern.test(line))
+}
+
+// Parse arguments from a line
+function parseArguments(line: string): { key: string; value: string } | null {
+  for (const pattern of TOOL_CALL_PATTERNS.argument) {
+    const match = line.match(pattern)
+    if (match) {
+      return { key: match[1], value: match[2].trim() }
+    }
+  }
+  return null
+}
+
+// Calculate duration string
+function formatDuration(startTime: number, endTime: number): string {
+  const ms = endTime - startTime
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
+}
+
+// Main parsing function
 export function parseToolCalls(output: string): ParsedSegment[] {
   const segments: ParsedSegment[] = []
   const lines = output.split('\n')
   
   let currentText = ""
   let currentTool: ToolCall | null = null
-  let collectingResult = false
   let resultBuffer: string[] = []
+  let inCodeBlock = false
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     const trimmed = line.trim()
     
+    // Track code blocks
+    if (trimmed.startsWith('```')) {
+      inCodeBlock = !inCodeBlock
+      if (currentTool) {
+        resultBuffer.push(line)
+      } else {
+        currentText += line + '\n'
+      }
+      continue
+    }
+    
+    // Empty lines
+    if (!trimmed) {
+      if (currentTool) {
+        resultBuffer.push(line)
+      } else {
+        currentText += line + '\n'
+      }
+      continue
+    }
+    
     // Check for tool invocation
-    const invocationMatch = trimmed.match(TOOL_CALL_PATTERNS.invocation)
-    if (invocationMatch) {
+    const invocation = isToolInvocation(line)
+    if (invocation.isMatch && !inCodeBlock) {
       // Save any pending text
       if (currentText.trim()) {
         segments.push({ type: "text", content: currentText })
@@ -89,87 +255,73 @@ export function parseToolCalls(output: string): ParsedSegment[] {
       // Save any pending result from previous tool
       if (currentTool && resultBuffer.length > 0) {
         currentTool.result = resultBuffer.join('\n')
+        currentTool.endTime = Date.now()
+        currentTool.duration = formatDuration(currentTool.startTime, currentTool.endTime)
+        segments.push({ type: "tool_call", toolCall: currentTool })
         resultBuffer = []
       }
       
       // Start new tool call
       currentTool = {
         id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        toolName: invocationMatch[1],
+        toolName: invocation.toolName!,
         status: "running",
         arguments: {},
         startTime: Date.now(),
       }
       
-      collectingResult = false
       continue
     }
     
     // Check for completion
-    if (TOOL_CALL_PATTERNS.completion.test(trimmed)) {
-      if (currentTool) {
-        currentTool.status = "completed"
-        if (resultBuffer.length > 0) {
-          currentTool.result = resultBuffer.join('\n')
-          resultBuffer = []
-        }
-        segments.push({ type: "tool_call", toolCall: currentTool })
-        currentTool = null
-        collectingResult = false
-      }
-      continue
-    }
-    
-    // Check for failure
-    if (TOOL_CALL_PATTERNS.failure.test(trimmed)) {
-      if (currentTool) {
-        currentTool.status = "failed"
-        if (resultBuffer.length > 0) {
-          currentTool.result = resultBuffer.join('\n')
-          resultBuffer = []
-        }
-        segments.push({ type: "tool_call", toolCall: currentTool })
-        currentTool = null
-        collectingResult = false
-      }
-      continue
-    }
-    
-    // Check for arguments
-    const argMatch = trimmed.match(TOOL_CALL_PATTERNS.argument)
-    if (argMatch && currentTool && !collectingResult) {
-      const [, key, value] = argMatch
-      currentTool.arguments[key] = value
-      continue
-    }
-    
-    // Check for separator (end of tool call section)
-    if (TOOL_CALL_PATTERNS.separator.test(trimmed)) {
-      if (currentTool) {
-        collectingResult = true
-      }
-      continue
-    }
-    
-    // Collect result content
-    if (currentTool && (collectingResult || trimmed.startsWith('$') || trimmed.startsWith('>'))) {
-      resultBuffer.push(line)
-      continue
-    }
-    
-    // Regular text
-    if (currentTool) {
-      // If we have a tool and see regular text, the tool section ended
+    if (isToolCompletion(trimmed) && currentTool) {
+      currentTool.status = "completed"
       if (resultBuffer.length > 0) {
         currentTool.result = resultBuffer.join('\n')
         resultBuffer = []
       }
+      currentTool.endTime = Date.now()
+      currentTool.duration = formatDuration(currentTool.startTime, currentTool.endTime)
       segments.push({ type: "tool_call", toolCall: currentTool })
       currentTool = null
-      collectingResult = false
+      continue
     }
     
-    currentText += line + '\n'
+    // Check for failure
+    if (isToolFailure(trimmed) && currentTool) {
+      currentTool.status = "failed"
+      if (resultBuffer.length > 0) {
+        currentTool.result = resultBuffer.join('\n')
+        resultBuffer = []
+      }
+      currentTool.endTime = Date.now()
+      currentTool.duration = formatDuration(currentTool.startTime, currentTool.endTime)
+      segments.push({ type: "tool_call", toolCall: currentTool })
+      currentTool = null
+      continue
+    }
+    
+    // Parse arguments (only if we have a tool and not in result collection)
+    if (currentTool && resultBuffer.length === 0) {
+      const arg = parseArguments(trimmed)
+      if (arg) {
+        currentTool.arguments[arg.key] = arg.value
+        continue
+      }
+    }
+    
+    // Check for separator
+    if (TOOL_CALL_PATTERNS.separator.some(p => p.test(trimmed)) && currentTool) {
+      // Separator indicates moving to result phase
+      continue
+    }
+    
+    // Collect content
+    if (currentTool) {
+      resultBuffer.push(line)
+    } else {
+      currentText += line + '\n'
+    }
   }
   
   // Handle any remaining content
@@ -177,6 +329,8 @@ export function parseToolCalls(output: string): ParsedSegment[] {
     if (resultBuffer.length > 0) {
       currentTool.result = resultBuffer.join('\n')
     }
+    currentTool.endTime = Date.now()
+    currentTool.duration = formatDuration(currentTool.startTime, currentTool.endTime)
     segments.push({ type: "tool_call", toolCall: currentTool })
   }
   
@@ -187,91 +341,63 @@ export function parseToolCalls(output: string): ParsedSegment[] {
   return segments
 }
 
-// Alternative: Parse tool calls from opencode's specific format
-// Based on common AI CLI patterns
-export function parseOpencodeToolCalls(output: string): ParsedSegment[] {
+// Parse tool calls from OpenCode's structured format
+export function parseStructuredToolCalls(events: Array<{
+  type: string
+  tool?: string
+  arguments?: Record<string, unknown>
+  result?: string
+  status?: string
+}>): ParsedSegment[] {
   const segments: ParsedSegment[] = []
   
-  // Split by tool call markers
-  // Pattern: "  > tool_name" or similar indentation-based tool calls
-  const parts = output.split(/(?=\n\s*[▶>●▸→]\s*\w+)/)
-  
-  for (const part of parts) {
-    if (!part.trim()) continue
-    
-    // Check if this is a tool call section
-    const toolMatch = part.match(/^\s*[▶>●▸→]\s*(\w+(?:_\w+)*)/)
-    if (toolMatch) {
-      const toolCall = parseToolCallBlock(toolMatch[1], part)
-      if (toolCall) {
-        segments.push({ type: "tool_call", toolCall })
+  for (const event of events) {
+    if (event.type === 'tool_call' && event.tool) {
+      const toolCall: ToolCall = {
+        id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        toolName: event.tool,
+        status: (event.status as "running" | "completed" | "failed") || "completed",
+        arguments: Object.entries(event.arguments || {}).reduce((acc, [key, value]) => {
+          acc[key] = typeof value === 'string' ? value : JSON.stringify(value)
+          return acc
+        }, {} as Record<string, string>),
+        result: event.result,
+        startTime: Date.now(),
       }
-    } else {
-      segments.push({ type: "text", content: part })
+      
+      segments.push({ type: "tool_call", toolCall })
     }
   }
   
   return segments
 }
 
-function parseToolCallBlock(toolName: string, block: string): ToolCall | null {
-  const lines = block.split('\n')
-  const toolCall: ToolCall = {
-    id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-    toolName,
-    status: "completed", // Default, will be updated
-    arguments: {},
-    startTime: Date.now(),
+// Helper to merge new output with existing segments
+export function mergeToolCallSegments(
+  existingSegments: ParsedSegment[],
+  newOutput: string
+): ParsedSegment[] {
+  // Get the last tool call from existing segments
+  const lastToolIndex = existingSegments.findLastIndex(s => s.type === 'tool_call')
+  
+  if (lastToolIndex === -1) {
+    // No existing tool calls, parse fresh
+    return parseToolCalls(newOutput)
   }
   
-  let inResult = false
-  const resultLines: string[] = []
-  
-  for (const line of lines) {
-    const trimmed = line.trim()
+  const lastTool = existingSegments[lastToolIndex].toolCall
+  if (lastTool && lastTool.status === 'running') {
+    // Tool is still running, append new content to it
+    const existingText = existingSegments
+      .filter(s => s.type === 'text')
+      .map(s => s.content)
+      .join('')
     
-    // Skip the invocation line itself
-    if (trimmed.match(new RegExp(`^[▶>●▸→]\\s*${toolName}`, 'i'))) {
-      continue
-    }
-    
-    // Check for status indicators
-    if (trimmed.match(/^(?:✓|✅|✔)\s*/)) {
-      toolCall.status = "completed"
-      inResult = false
-      continue
-    }
-    
-    if (trimmed.match(/^(?:✗|❌|✘)\s*/)) {
-      toolCall.status = "failed"
-      inResult = false
-      continue
-    }
-    
-    // Parse arguments
-    const argMatch = trimmed.match(/^(\w+):\s*(.+)$/)
-    if (argMatch && !inResult) {
-      const [, key, value] = argMatch
-      toolCall.arguments[key] = value
-      continue
-    }
-    
-    // Collect result lines
-    if (trimmed && !trimmed.startsWith('✓') && !trimmed.startsWith('✗')) {
-      // Check if line looks like a result (code, output, etc)
-      if (inResult || trimmed.startsWith('$') || trimmed.startsWith('>')) {
-        inResult = true
-        resultLines.push(line)
-      } else if (resultLines.length > 0) {
-        // Still collecting result
-        resultLines.push(line)
-      }
-    }
+    const fullOutput = existingText + newOutput
+    return parseToolCalls(fullOutput)
   }
   
-  if (resultLines.length > 0) {
-    toolCall.result = resultLines.join('\n')
-  }
-  
-  return toolCall
+  // Tool completed, parse new content
+  const newSegments = parseToolCalls(newOutput)
+  return [...existingSegments, ...newSegments]
 }

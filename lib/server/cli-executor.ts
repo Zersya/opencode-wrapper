@@ -19,6 +19,7 @@ import {
 } from "./execution-stream"
 import { createOpenCodeClient, type OpenCodeEvent } from "./opencode-api-client"
 import { processOutput, type ProcessedOutput } from "./output-filter"
+import { type ExecutionProgress } from "@/lib/terminal/progress-types"
 
 const execAsync = promisify(exec)
 
@@ -94,6 +95,11 @@ export interface RunningExecution {
   questionPrompt?: string
   sessionId?: string  // OpenCode API session ID for REST-based executions
   unsubscribe?: () => void  // Function to unsubscribe from SSE events
+  // NEW: Progress tracking
+  progress?: ExecutionProgress
+  startTime: number
+  lastOutputTime: number
+  toolCallCount: number
 }
 
 // Use globalThis to ensure Map is shared across all module instances
@@ -147,6 +153,9 @@ async function runExecution(
       output: [],
       status: "running",
       waitingForInput: false,
+      startTime: Date.now(),
+      lastOutputTime: Date.now(),
+      toolCallCount: 0,
     }
     runningExecutions.set(executionId, running)
 
@@ -493,6 +502,24 @@ async function runExecution(
           console.log(`[cli-executor] Message sent successfully, message ID: ${message.id}`)
         } catch (sendError) {
           console.error(`[cli-executor] Failed to send message:`, sendError)
+          
+          // Provide more helpful error messages for common issues
+          if (sendError instanceof Error) {
+            if (sendError.message.includes("timeout") || sendError.name === "TimeoutError") {
+              throw new Error(
+                `The OpenCode server timed out while processing your request. ` +
+                `This may happen when the server is under heavy load or the request is complex. ` +
+                `Please try again. (Session: ${session.id})`
+              )
+            }
+            if (sendError.message.includes("Session not found")) {
+              throw new Error(
+                `The OpenCode session was lost. The server may have restarted. ` +
+                `Please retry your execution.`
+              )
+            }
+          }
+          
           throw sendError
         }
         

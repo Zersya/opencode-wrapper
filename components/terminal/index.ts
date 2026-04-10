@@ -1,2 +1,6 @@
 export { TerminalOutputViewer } from "./output-viewer"
 export { ExecutionControls, ExecutionStatus } from "./execution-controls"
+export { ProgressTimeline } from "./progress-timeline"
+export { ToolCallCard } from "./tool-call-card"
+export { parseToolCalls, parseStructuredToolCalls, mergeToolCallSegments, getToolIcon, TOOL_ICONS } from "./tool-call-parser"
+export type { ToolCall } from "./tool-call-parser"

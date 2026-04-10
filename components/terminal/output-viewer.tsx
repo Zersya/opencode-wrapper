@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/dialog"
 import { ToolCallCard } from "./tool-call-card"
 import { parseToolCalls } from "./tool-call-parser"
+import { ProgressTimeline } from "./progress-timeline"
+import type { ExecutionPhase } from "@/lib/terminal/progress-types"
 
 interface TerminalOutputViewerProps {
   executionId: number
@@ -61,6 +63,18 @@ export function TerminalOutputViewer({
   const eventSourceRef = useRef<EventSource | null>(null)
   const hasConnectedRef = useRef(false)
   const connectionAttemptsRef = useRef(0)
+
+  const [progress, setProgress] = React.useState<{
+    phase: ExecutionPhase
+    progressPercent: number
+    currentTool?: string
+    elapsedMs: number
+  }>({
+    phase: 'initializing',
+    progressPercent: 0,
+    elapsedMs: 0,
+  })
+  const progressStartTimeRef = useRef<number>(Date.now())
 
   const scrollToBottom = useCallback(() => {
     if (terminalRef.current) {
@@ -176,6 +190,20 @@ export function TerminalOutputViewer({
         setAnswer("")
       } catch (err) {
         console.error("[Terminal] Error parsing question event:", err)
+      }
+    })
+
+    eventSource.addEventListener("progress", (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data)
+        setProgress({
+          phase: data.phase as ExecutionPhase,
+          progressPercent: data.progressPercent,
+          currentTool: data.currentTool,
+          elapsedMs: Date.now() - progressStartTimeRef.current,
+        })
+      } catch (err) {
+        console.error("[Terminal] Error parsing progress event:", err)
       }
     })
 
@@ -334,6 +362,18 @@ export function TerminalOutputViewer({
         </div>
       </div>
 
+      {/* Progress Timeline */}
+      {(isRunning || isConnected) && (
+        <div className="px-4 py-3 border-b border-gray-800 bg-[#0f1012]">
+          <ProgressTimeline
+            phase={progress.phase}
+            progressPercent={progress.progressPercent}
+            currentTool={progress.currentTool}
+            elapsedMs={progress.elapsedMs}
+          />
+        </div>
+      )}
+
       <div
         ref={terminalRef as React.RefObject<HTMLDivElement>}
         className="flex-1 overflow-auto p-4 min-h-[300px] max-h-[500px]"
@@ -354,7 +394,10 @@ export function TerminalOutputViewer({
                   </pre>
                 )}
                 {segment.type === "tool_call" && segment.toolCall && (
-                  <ToolCallCard toolCall={segment.toolCall} />
+                  <ToolCallCard 
+                    toolCall={segment.toolCall} 
+                    isLive={isRunning && segment.toolCall.status === 'running'}
+                  />
                 )}
               </React.Fragment>
             ))}
