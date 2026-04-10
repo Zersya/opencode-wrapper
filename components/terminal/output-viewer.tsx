@@ -14,9 +14,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ToolCallCard } from "./tool-call-card"
-import { parseToolCalls } from "./tool-call-parser"
-import { ProgressTimeline } from "./progress-timeline"
-import type { ExecutionPhase } from "@/lib/terminal/progress-types"
+import { parseToolCalls, type ToolCall } from "./tool-call-parser"
+import { ExecutionHeader } from "./execution-header"
+import type { ExecutionProgress, ExecutionPhase, ToolExecution, FileChange } from "@/lib/terminal/progress-types"
 
 interface TerminalOutputViewerProps {
   executionId: number
@@ -25,6 +25,11 @@ interface TerminalOutputViewerProps {
   className?: string
   onStatusChange?: (status: string) => void
   onComplete?: () => void
+  repositoryInfo?: {
+    name: string
+    branch: string
+    commit?: string
+  }
 }
 
 const statusColors: Record<string, string> = {
@@ -50,6 +55,7 @@ export function TerminalOutputViewer({
   className,
   onStatusChange,
   onComplete,
+  repositoryInfo,
 }: TerminalOutputViewerProps) {
   const [output, setOutput] = React.useState(initialOutput)
   const [status, setStatus] = React.useState(initialStatus)
@@ -64,23 +70,41 @@ export function TerminalOutputViewer({
   const hasConnectedRef = useRef(false)
   const connectionAttemptsRef = useRef(0)
 
-  const [progress, setProgress] = React.useState<{
-    phase: ExecutionPhase
-    progressPercent: number
-    currentTool?: string
-    elapsedMs: number
-  }>({
-    phase: 'initializing',
-    progressPercent: 0,
+  // Track progress with realistic state
+  const [progress, setProgress] = React.useState<ExecutionProgress>({
+    phase: 'connecting',
+    startTime: Date.now(),
     elapsedMs: 0,
+    tools: [],
+    completedTools: 0,
+    totalTools: 0,
+    filesChanged: [],
+    waitingForQuestion: false,
   })
-  const progressStartTimeRef = useRef<number>(Date.now())
+
+  // Track running tools for detecting file changes
+  const runningToolsRef = useRef<Map<string, ToolExecution>>(new Map())
+  const lastOutputTimeRef = useRef<number>(Date.now())
 
   const scrollToBottom = useCallback(() => {
     if (terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight
     }
   }, [])
+
+  // Update elapsed time every second
+  useEffect(() => {
+    if (status !== 'running' && status !== 'pending') return
+    
+    const interval = setInterval(() => {
+      setProgress(prev => ({
+        ...prev,
+        elapsedMs: Date.now() - prev.startTime,
+      }))
+    }, 1000)
+    
+    return () => clearInterval(interval)
+  }, [status])
 
   // Setup SSE connection
   useEffect(() => {
@@ -101,6 +125,7 @@ export function TerminalOutputViewer({
     eventSource.onopen = () => {
       console.log(`[Terminal] SSE connected for execution ${executionId}`)
       setIsConnected(true)
+      setProgress(prev => ({ ...prev, phase: 'analyzing' }))
     }
 
     eventSource.onerror = (error) => {
@@ -109,7 +134,7 @@ export function TerminalOutputViewer({
       if (eventSourceRef.current === eventSource) {
         eventSource.close()
         eventSourceRef.current = null
-        hasConnectedRef.current = false // Allow reconnection
+        hasConnectedRef.current = false
       }
     }
 
@@ -131,6 +156,11 @@ export function TerminalOutputViewer({
             console.log(`[Terminal] Output updated: ${prev.length} -> ${newOutput.length} chars`)
             return newOutput
           })
+          
+          // Track tool calls from output
+          detectToolCallsFromOutput(data.output)
+          
+          lastOutputTimeRef.current = Date.now()
         }
       } catch (err) {
         console.error("[Terminal] Error parsing output event:", err)
@@ -144,6 +174,15 @@ export function TerminalOutputViewer({
         if (data.status && data.status !== status) {
           setStatus(data.status)
           onStatusChange?.(data.status)
+          
+          // Update progress phase based on status
+          if (data.status === 'running') {
+            setProgress(prev => ({ ...prev, phase: 'executing' }))
+          } else if (data.status === 'success') {
+            setProgress(prev => ({ ...prev, phase: 'complete' }))
+          } else if (data.status === 'failed') {
+            setProgress(prev => ({ ...prev, phase: 'error' }))
+          }
         }
       } catch (err) {
         console.error("[Terminal] Error parsing status event:", err)
@@ -156,6 +195,11 @@ export function TerminalOutputViewer({
         console.log(`[Terminal] Complete event: status=${data.status}`)
         setStatus(data.status)
         setIsConnected(false)
+        setProgress(prev => ({ 
+          ...prev, 
+          phase: data.status === 'success' ? 'complete' : 'error',
+          elapsedMs: Date.now() - prev.startTime
+        }))
         onStatusChange?.(data.status)
         onComplete?.()
         eventSource.close()
@@ -171,6 +215,7 @@ export function TerminalOutputViewer({
         console.error(`[Terminal] Execution error event:`, data.error)
         setStatus("failed")
         setIsConnected(false)
+        setProgress(prev => ({ ...prev, phase: 'error' }))
         onStatusChange?.("failed")
         onComplete?.()
         eventSource.close()
@@ -188,22 +233,75 @@ export function TerminalOutputViewer({
         setQuestionType(data.questionType)
         setIsQuestionModalOpen(true)
         setAnswer("")
+        
+        // Pause progress when waiting for input
+        setProgress(prev => ({
+          ...prev,
+          phase: 'waiting_input',
+          waitingForQuestion: true,
+          questionPrompt: data.output,
+        }))
       } catch (err) {
         console.error("[Terminal] Error parsing question event:", err)
       }
     })
 
-    eventSource.addEventListener("progress", (event: MessageEvent) => {
+    eventSource.addEventListener("tool_start", (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data)
-        setProgress({
-          phase: data.phase as ExecutionPhase,
-          progressPercent: data.progressPercent,
-          currentTool: data.currentTool,
-          elapsedMs: Date.now() - progressStartTimeRef.current,
-        })
+        console.log(`[Terminal] Tool start:`, data.tool, data.filePath)
+        
+        const toolExecution: ToolExecution = {
+          id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          toolName: data.tool,
+          status: 'running',
+          filePath: data.filePath,
+          startTime: Date.now(),
+        }
+        
+        runningToolsRef.current.set(toolExecution.id, toolExecution)
+        
+        setProgress(prev => ({
+          ...prev,
+          phase: 'executing',
+          currentTool: data.tool,
+          currentFile: data.filePath,
+          tools: [...prev.tools, toolExecution],
+          totalTools: prev.totalTools + 1,
+        }))
       } catch (err) {
-        console.error("[Terminal] Error parsing progress event:", err)
+        console.error("[Terminal] Error parsing tool_start event:", err)
+      }
+    })
+
+    eventSource.addEventListener("tool_complete", (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log(`[Terminal] Tool complete:`, data.tool)
+        
+        // Update the running tool to completed
+        const tools = [...progress.tools]
+        const lastTool = tools[tools.length - 1]
+        if (lastTool && lastTool.status === 'running') {
+          lastTool.status = 'completed'
+          lastTool.endTime = Date.now()
+          lastTool.result = data.result
+          
+          // Check if this was a file modification
+          if (data.filePath && (data.tool === 'edit' || data.tool === 'write')) {
+            addFileChange(data.filePath, data.tool === 'edit' ? 'modified' : 'created', data.additions || 0, data.deletions || 0)
+          }
+        }
+        
+        setProgress(prev => ({
+          ...prev,
+          tools,
+          completedTools: prev.completedTools + 1,
+          currentTool: undefined,
+          currentFile: undefined,
+        }))
+      } catch (err) {
+        console.error("[Terminal] Error parsing tool_complete event:", err)
       }
     })
 
@@ -216,7 +314,71 @@ export function TerminalOutputViewer({
       hasConnectedRef.current = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [executionId]) // Only reconnect if executionId changes
+  }, [executionId])
+
+  // Detect tool calls from output text
+  const detectToolCallsFromOutput = (text: string) => {
+    // Simple regex to detect tool invocations
+    const toolPatterns = [
+      { pattern: /▶\s*(read|edit|write|bash|grep|search)\s+["']?([^"'\n]+)["']?/i, type: '$1' },
+      { pattern: /(reading|editing|writing)\s+["']?([^"'\n]+)["']?/i, type: '$1' },
+    ]
+    
+    for (const { pattern, type } of toolPatterns) {
+      const match = text.match(pattern)
+      if (match) {
+        const toolName = match[1].toLowerCase()
+        const filePath = match[2]
+        
+        // Don't add duplicate running tools
+        const hasRunning = progress.tools.some(t => t.status === 'running' && t.toolName === toolName)
+        if (!hasRunning) {
+          const toolExecution: ToolExecution = {
+            id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            toolName,
+            status: 'running',
+            filePath,
+            startTime: Date.now(),
+          }
+          
+          setProgress(prev => ({
+            ...prev,
+            phase: 'executing',
+            currentTool: toolName,
+            currentFile: filePath,
+            tools: [...prev.tools, toolExecution],
+            totalTools: prev.totalTools + 1,
+          }))
+        }
+        break
+      }
+    }
+  }
+
+  // Add a file change to the list
+  const addFileChange = (path: string, type: FileChange['type'], additions: number, deletions: number) => {
+    setProgress(prev => {
+      const existingIndex = prev.filesChanged.findIndex(f => f.path === path)
+      
+      if (existingIndex >= 0) {
+        // Update existing
+        const filesChanged = [...prev.filesChanged]
+        filesChanged[existingIndex] = {
+          ...filesChanged[existingIndex],
+          type,
+          additions: filesChanged[existingIndex].additions + additions,
+          deletions: filesChanged[existingIndex].deletions + deletions,
+        }
+        return { ...prev, filesChanged }
+      } else {
+        // Add new
+        return {
+          ...prev,
+          filesChanged: [...prev.filesChanged, { path, type, additions, deletions }],
+        }
+      }
+    })
+  }
 
   // Polling fallback
   const [pollPosition, setPollPosition] = useState(0)
@@ -232,7 +394,6 @@ export function TerminalOutputViewer({
       return
     }
 
-    // Delay polling to give SSE time
     const timeoutId = setTimeout(() => {
       if (isConnected) return
       
@@ -244,10 +405,15 @@ export function TerminalOutputViewer({
             console.log(`[Terminal] Polled ${result.output.length} chars`)
             setOutput((prev) => prev + result.output)
             setPollPosition(result.position)
+            detectToolCallsFromOutput(result.output)
           }
           if (result.isComplete) {
             setStatus(result.status)
             onStatusChange?.(result.status)
+            setProgress(prev => ({ 
+              ...prev, 
+              phase: result.status === 'success' ? 'complete' : 'error' 
+            }))
             if (pollIntervalRef.current) {
               clearInterval(pollIntervalRef.current)
               pollIntervalRef.current = null
@@ -299,6 +465,14 @@ export function TerminalOutputViewer({
         setQuestionPrompt("")
         setAnswer("")
         
+        // Resume execution
+        setProgress(prev => ({
+          ...prev,
+          phase: 'executing',
+          waitingForQuestion: false,
+          questionPrompt: undefined,
+        }))
+        
         // Append the user's answer to the output for visibility
         setOutput((prev) => prev + `\n\n[User Input]: ${answer}\n\n`)
       } else {
@@ -330,6 +504,18 @@ export function TerminalOutputViewer({
 
   return (
     <div className={cn("flex flex-col rounded-lg overflow-hidden bg-[#0a0b0d] border border-gray-800", className)}>
+      {/* Execution Header with Repository Info */}
+      {(isRunning || isConnected || progress.tools.length > 0) && (
+        <div className="border-b border-gray-800">
+          <ExecutionHeader 
+            progress={progress} 
+            repositoryInfo={repositoryInfo}
+            className="p-3"
+          />
+        </div>
+      )}
+
+      {/* Terminal Header */}
       <div className="flex items-center gap-2 px-3 py-2 bg-[#1a1d21] border-b border-gray-800">
         <div className="flex gap-1.5">
           <div className="w-3 h-3 rounded-full bg-red-500" />
@@ -362,18 +548,7 @@ export function TerminalOutputViewer({
         </div>
       </div>
 
-      {/* Progress Timeline */}
-      {(isRunning || isConnected) && (
-        <div className="px-4 py-3 border-b border-gray-800 bg-[#0f1012]">
-          <ProgressTimeline
-            phase={progress.phase}
-            progressPercent={progress.progressPercent}
-            currentTool={progress.currentTool}
-            elapsedMs={progress.elapsedMs}
-          />
-        </div>
-      )}
-
+      {/* Terminal Output */}
       <div
         ref={terminalRef as React.RefObject<HTMLDivElement>}
         className="flex-1 overflow-auto p-4 min-h-[300px] max-h-[500px]"
